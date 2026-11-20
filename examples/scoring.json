@@ -1,0 +1,14 @@
+{
+  "scoreRequest": [
+    {
+      "criterionKey": "c1",
+      "requirementCode": "sql",
+      "facts": [
+        {"evidenceKey": "e1", "code": "skill_present", "value": true}
+      ]
+    }
+  ],
+  "scoreResponse": [
+    {"criterionKey": "c1", "status": "matched", "evidenceKeys": ["e1"]}
+  ]
+}

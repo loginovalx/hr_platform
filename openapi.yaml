@@ -1,0 +1,3951 @@
+openapi: 3.1.0
+info:
+  title: Кадры · Горький
+  version: 1.0.0
+  description: Контракт муниципального подбора. Идентификаторы непрозрачные. Даты ISO 8601. Для PDF, DOCX и TXT до 5 МБ используйте
+    multipart/form-data. В этом формате answers — JSON-строка.
+servers:
+- url: /api/v1
+tags:
+- name: Доступ
+- name: Вакансии
+- name: Отклики
+- name: Кандидаты
+- name: Этапы
+- name: Анкеты
+- name: Аналитика
+paths:
+  /auth/session:
+    get:
+      tags:
+      - Доступ
+      summary: Текущий пользователь
+      operationId: get_auth_session
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated:
+                    type: boolean
+                  actor:
+                    anyOf:
+                    - type: object
+                      properties:
+                        name:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                          - admin
+                          - hr
+                        hosted:
+                          type: boolean
+                    - type: 'null'
+                  demoAvailable:
+                    type: boolean
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/login:
+    post:
+      tags:
+      - Доступ
+      summary: Вход в кабинет
+      operationId: post_auth_login
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated:
+                    type: boolean
+                  role:
+                    type: string
+                    enum:
+                    - admin
+                    - hr
+                  name:
+                    type: string
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user:
+                  type: string
+                  maxLength: 80
+                password:
+                  type: string
+                  maxLength: 256
+              required:
+              - user
+  /auth/logout:
+    post:
+      tags:
+      - Доступ
+      summary: Выход из кабинета
+      operationId: post_auth_logout
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated:
+                    type: boolean
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+  /public/session:
+    get:
+      tags:
+      - Доступ
+      summary: Создать гостевую сессию
+      operationId: get_public_session
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /public/vacancies:
+    get:
+      tags:
+      - Вакансии
+      summary: Опубликованные вакансии
+      operationId: get_public_vacancies
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        vacancyId:
+                          type: string
+                          maxLength: 140
+                        slug:
+                          type: string
+                          maxLength: 90
+                        title:
+                          type: string
+                          maxLength: 150
+                        department:
+                          type: string
+                          maxLength: 140
+                        location:
+                          type: string
+                          maxLength: 120
+                        schedule:
+                          type: string
+                          maxLength: 80
+                        description:
+                          type: string
+                        hasTest:
+                          type: boolean
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+  /public/vacancies/{slug}:
+    get:
+      tags:
+      - Вакансии
+      summary: Опубликованная версия вакансии
+      operationId: get_public_vacancies_slug
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  slug:
+                    type: string
+                    maxLength: 90
+                  title:
+                    type: string
+                    maxLength: 150
+                  department:
+                    type: string
+                    maxLength: 140
+                  location:
+                    type: string
+                    maxLength: 120
+                  schedule:
+                    type: string
+                    maxLength: 80
+                  description:
+                    type: string
+                  publishedVersionId:
+                    type: string
+                    maxLength: 140
+                  formFields:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          enum:
+                          - fullName
+                          - contact
+                          - resume
+                        label:
+                          type: string
+                        required:
+                          type: boolean
+                      required:
+                      - id
+                      - required
+                  testVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          maxLength: 140
+                        text:
+                          type: string
+                          maxLength: 400
+                        required:
+                          type: boolean
+                      required:
+                      - text
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /public/applications:
+    post:
+      tags:
+      - Отклики
+      summary: Гостевой отклик
+      operationId: post_public_applications
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  receiptNumber:
+                    type: string
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vacancyId:
+                  type: string
+                  maxLength: 140
+                fullName:
+                  type: string
+                  maxLength: 160
+                contact:
+                  type: string
+                  maxLength: 254
+                  format: email
+                resumeText:
+                  type: string
+                  maxLength: 20000
+                publishedVersionId:
+                  type: string
+                  maxLength: 140
+                testVersionId:
+                  type: string
+                  maxLength: 140
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      questionId:
+                        type: string
+                        maxLength: 140
+                      value:
+                        type: string
+                        maxLength: 2000
+                    required:
+                    - questionId
+                    - value
+                  maxItems: 6
+              required:
+              - vacancyId
+              - publishedVersionId
+              - fullName
+              - contact
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                vacancyId:
+                  type: string
+                  maxLength: 140
+                fullName:
+                  type: string
+                  maxLength: 160
+                contact:
+                  type: string
+                  maxLength: 254
+                  format: email
+                resumeText:
+                  type: string
+                  maxLength: 20000
+                publishedVersionId:
+                  type: string
+                  maxLength: 140
+                testVersionId:
+                  type: string
+                  maxLength: 140
+                answers:
+                  type: string
+                resumeFile:
+                  type: string
+                  format: binary
+              required:
+              - vacancyId
+              - publishedVersionId
+              - fullName
+              - contact
+  /public/receipts/{receiptNumber}:
+    get:
+      tags:
+      - Отклики
+      summary: Подтверждение и статус локального разбора
+      operationId: get_public_receipts_receiptNumber
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  receiptNumber:
+                    type: string
+                    maxLength: 140
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+                  clarificationThreadId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - guestCookie: []
+      parameters:
+      - name: receiptNumber
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /public/clarifications/{threadId}:
+    get:
+      tags:
+      - Отклики
+      summary: Вопросы чата уточнений
+      operationId: get_public_clarifications_threadId
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threadId:
+                    type: string
+                    maxLength: 140
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        questionId:
+                          type: string
+                          maxLength: 140
+                        text:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                          - open
+                          - answered
+                        answer:
+                          type: string
+                        criterionId:
+                          type: string
+                          maxLength: 140
+                    maxItems: 8
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - guestCookie: []
+      parameters:
+      - name: threadId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /public/clarifications/{threadId}/answers:
+    post:
+      tags:
+      - Отклики
+      summary: Сохранить ответы кандидата
+      operationId: post_public_clarifications_threadId_answers
+      responses:
+        '202':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: boolean
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - guestCookie: []
+      parameters:
+      - name: threadId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      questionId:
+                        type: string
+                        maxLength: 140
+                      text:
+                        type: string
+                        maxLength: 2000
+                    required:
+                    - questionId
+                    - text
+                  maxItems: 8
+              required:
+              - answers
+  /public/clarification-sessions:
+    post:
+      tags:
+      - Отклики
+      summary: Обменять одноразовую ссылку на гостевую сессию
+      operationId: post_public_clarification_sessions
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threadId:
+                    type: string
+                    maxLength: 140
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+              required:
+              - token
+  /public/surveys/{token}:
+    get:
+      tags:
+      - Анкеты
+      summary: Открыть анкету по ссылке
+      operationId: get_public_surveys_token
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                    - interview_feedback
+                    - exit_feedback
+                  title:
+                    type: string
+                  audience:
+                    type: string
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          maxLength: 140
+                        text:
+                          type: string
+                        type:
+                          type: string
+                          enum:
+                          - rating
+                          - text
+                        required:
+                          type: boolean
+                    maxItems: 3
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /public/surveys/{token}/responses:
+    post:
+      tags:
+      - Анкеты
+      summary: Сохранить единственный ответ на анкету
+      operationId: post_public_surveys_token_responses
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  responseId:
+                    type: string
+                    maxLength: 140
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      questionId:
+                        type: string
+                        maxLength: 140
+                      value:
+                        oneOf:
+                        - type: integer
+                          minimum: 1
+                          maximum: 5
+                        - type: string
+                          maxLength: 1200
+                    required:
+                    - questionId
+                    - value
+                  maxItems: 3
+              required:
+              - answers
+  /hr/vacancies:
+    get:
+      tags:
+      - Вакансии
+      summary: Список вакансий HR
+      operationId: get_hr_vacancies
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        vacancyId:
+                          type: string
+                          maxLength: 140
+                        slug:
+                          type: string
+                          maxLength: 90
+                        title:
+                          type: string
+                          maxLength: 150
+                        department:
+                          type: string
+                          maxLength: 140
+                        location:
+                          type: string
+                          maxLength: 120
+                        schedule:
+                          type: string
+                          maxLength: 80
+                        status:
+                          type: string
+                          enum:
+                          - published
+                          - draft
+                        publishedVersionId:
+                          anyOf:
+                          - type: string
+                            maxLength: 140
+                          - type: 'null'
+                        updatedAt:
+                          type: string
+                          format: date-time
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+    post:
+      tags:
+      - Вакансии
+      summary: Создать черновик
+      operationId: post_hr_vacancies
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  slug:
+                    type: string
+                    maxLength: 90
+                  title:
+                    type: string
+                    maxLength: 150
+                  department:
+                    type: string
+                    maxLength: 140
+                  location:
+                    type: string
+                    maxLength: 120
+                  schedule:
+                    type: string
+                    maxLength: 80
+                  status:
+                    type: string
+                    enum:
+                    - published
+                    - draft
+                  publishedVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  updatedAt:
+                    type: string
+                    format: date-time
+                  draft:
+                    type: object
+                    properties:
+                      slug:
+                        type: string
+                        maxLength: 90
+                      title:
+                        type: string
+                        maxLength: 150
+                      department:
+                        type: string
+                        maxLength: 140
+                      location:
+                        type: string
+                        maxLength: 120
+                      schedule:
+                        type: string
+                        maxLength: 80
+                      description:
+                        type: string
+                        maxLength: 12000
+                      formFields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              enum:
+                              - fullName
+                              - contact
+                              - resume
+                            label:
+                              type: string
+                            required:
+                              type: boolean
+                          required:
+                          - id
+                          - required
+                        maxItems: 8
+                      criteria:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            label:
+                              type: string
+                              maxLength: 160
+                            code:
+                              type: string
+                              enum:
+                              - custom
+                              - sql
+                              - python
+                              - analytics
+                              - api
+                              - communication
+                              - education
+                              - project
+                              - office
+                              - experience
+                            keywords:
+                              type: array
+                              items:
+                                type: string
+                                maxLength: 70
+                              maxItems: 12
+                            required:
+                              type: boolean
+                            question:
+                              type: string
+                              maxLength: 300
+                          required:
+                          - label
+                        maxItems: 8
+                      testQuestions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            text:
+                              type: string
+                              maxLength: 400
+                            required:
+                              type: boolean
+                          required:
+                          - text
+                        maxItems: 6
+                    required:
+                    - title
+                    - department
+                    - description
+                    - slug
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slug:
+                  type: string
+                  maxLength: 90
+                title:
+                  type: string
+                  maxLength: 150
+                department:
+                  type: string
+                  maxLength: 140
+                location:
+                  type: string
+                  maxLength: 120
+                schedule:
+                  type: string
+                  maxLength: 80
+                description:
+                  type: string
+                  maxLength: 12000
+                formFields:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        enum:
+                        - fullName
+                        - contact
+                        - resume
+                      label:
+                        type: string
+                      required:
+                        type: boolean
+                    required:
+                    - id
+                    - required
+                  maxItems: 8
+                criteria:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        maxLength: 140
+                      label:
+                        type: string
+                        maxLength: 160
+                      code:
+                        type: string
+                        enum:
+                        - custom
+                        - sql
+                        - python
+                        - analytics
+                        - api
+                        - communication
+                        - education
+                        - project
+                        - office
+                        - experience
+                      keywords:
+                        type: array
+                        items:
+                          type: string
+                          maxLength: 70
+                        maxItems: 12
+                      required:
+                        type: boolean
+                      question:
+                        type: string
+                        maxLength: 300
+                    required:
+                    - label
+                  maxItems: 8
+                testQuestions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        maxLength: 140
+                      text:
+                        type: string
+                        maxLength: 400
+                      required:
+                        type: boolean
+                    required:
+                    - text
+                  maxItems: 6
+              required:
+              - title
+              - department
+              - description
+              - slug
+  /hr/vacancies/{id}:
+    get:
+      tags:
+      - Вакансии
+      summary: Открыть черновик вакансии
+      operationId: get_hr_vacancies_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  slug:
+                    type: string
+                    maxLength: 90
+                  title:
+                    type: string
+                    maxLength: 150
+                  department:
+                    type: string
+                    maxLength: 140
+                  location:
+                    type: string
+                    maxLength: 120
+                  schedule:
+                    type: string
+                    maxLength: 80
+                  status:
+                    type: string
+                    enum:
+                    - published
+                    - draft
+                  publishedVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  updatedAt:
+                    type: string
+                    format: date-time
+                  draft:
+                    type: object
+                    properties:
+                      slug:
+                        type: string
+                        maxLength: 90
+                      title:
+                        type: string
+                        maxLength: 150
+                      department:
+                        type: string
+                        maxLength: 140
+                      location:
+                        type: string
+                        maxLength: 120
+                      schedule:
+                        type: string
+                        maxLength: 80
+                      description:
+                        type: string
+                        maxLength: 12000
+                      formFields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              enum:
+                              - fullName
+                              - contact
+                              - resume
+                            label:
+                              type: string
+                            required:
+                              type: boolean
+                          required:
+                          - id
+                          - required
+                        maxItems: 8
+                      criteria:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            label:
+                              type: string
+                              maxLength: 160
+                            code:
+                              type: string
+                              enum:
+                              - custom
+                              - sql
+                              - python
+                              - analytics
+                              - api
+                              - communication
+                              - education
+                              - project
+                              - office
+                              - experience
+                            keywords:
+                              type: array
+                              items:
+                                type: string
+                                maxLength: 70
+                              maxItems: 12
+                            required:
+                              type: boolean
+                            question:
+                              type: string
+                              maxLength: 300
+                          required:
+                          - label
+                        maxItems: 8
+                      testQuestions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            text:
+                              type: string
+                              maxLength: 400
+                            required:
+                              type: boolean
+                          required:
+                          - text
+                        maxItems: 6
+                    required:
+                    - title
+                    - department
+                    - description
+                    - slug
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/vacancies/{id}/draft:
+    put:
+      tags:
+      - Вакансии
+      summary: Изменить черновик вакансии
+      operationId: put_hr_vacancies_id_draft
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  slug:
+                    type: string
+                    maxLength: 90
+                  title:
+                    type: string
+                    maxLength: 150
+                  department:
+                    type: string
+                    maxLength: 140
+                  location:
+                    type: string
+                    maxLength: 120
+                  schedule:
+                    type: string
+                    maxLength: 80
+                  status:
+                    type: string
+                    enum:
+                    - published
+                    - draft
+                  publishedVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  updatedAt:
+                    type: string
+                    format: date-time
+                  draft:
+                    type: object
+                    properties:
+                      slug:
+                        type: string
+                        maxLength: 90
+                      title:
+                        type: string
+                        maxLength: 150
+                      department:
+                        type: string
+                        maxLength: 140
+                      location:
+                        type: string
+                        maxLength: 120
+                      schedule:
+                        type: string
+                        maxLength: 80
+                      description:
+                        type: string
+                        maxLength: 12000
+                      formFields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              enum:
+                              - fullName
+                              - contact
+                              - resume
+                            label:
+                              type: string
+                            required:
+                              type: boolean
+                          required:
+                          - id
+                          - required
+                        maxItems: 8
+                      criteria:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            label:
+                              type: string
+                              maxLength: 160
+                            code:
+                              type: string
+                              enum:
+                              - custom
+                              - sql
+                              - python
+                              - analytics
+                              - api
+                              - communication
+                              - education
+                              - project
+                              - office
+                              - experience
+                            keywords:
+                              type: array
+                              items:
+                                type: string
+                                maxLength: 70
+                              maxItems: 12
+                            required:
+                              type: boolean
+                            question:
+                              type: string
+                              maxLength: 300
+                          required:
+                          - label
+                        maxItems: 8
+                      testQuestions:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              maxLength: 140
+                            text:
+                              type: string
+                              maxLength: 400
+                            required:
+                              type: boolean
+                          required:
+                          - text
+                        maxItems: 6
+                    required:
+                    - title
+                    - department
+                    - description
+                    - slug
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slug:
+                  type: string
+                  maxLength: 90
+                title:
+                  type: string
+                  maxLength: 150
+                department:
+                  type: string
+                  maxLength: 140
+                location:
+                  type: string
+                  maxLength: 120
+                schedule:
+                  type: string
+                  maxLength: 80
+                description:
+                  type: string
+                  maxLength: 12000
+                formFields:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        enum:
+                        - fullName
+                        - contact
+                        - resume
+                      label:
+                        type: string
+                      required:
+                        type: boolean
+                    required:
+                    - id
+                    - required
+                  maxItems: 8
+                criteria:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        maxLength: 140
+                      label:
+                        type: string
+                        maxLength: 160
+                      code:
+                        type: string
+                        enum:
+                        - custom
+                        - sql
+                        - python
+                        - analytics
+                        - api
+                        - communication
+                        - education
+                        - project
+                        - office
+                        - experience
+                      keywords:
+                        type: array
+                        items:
+                          type: string
+                          maxLength: 70
+                        maxItems: 12
+                      required:
+                        type: boolean
+                      question:
+                        type: string
+                        maxLength: 300
+                    required:
+                    - label
+                  maxItems: 8
+                testQuestions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        maxLength: 140
+                      text:
+                        type: string
+                        maxLength: 400
+                      required:
+                        type: boolean
+                    required:
+                    - text
+                  maxItems: 6
+              required:
+              - title
+              - department
+              - description
+              - slug
+  /hr/vacancies/{id}/publish:
+    post:
+      tags:
+      - Вакансии
+      summary: Опубликовать неизменяемую версию
+      operationId: post_hr_vacancies_id_publish
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  slug:
+                    type: string
+                    maxLength: 90
+                  title:
+                    type: string
+                    maxLength: 150
+                  department:
+                    type: string
+                    maxLength: 140
+                  location:
+                    type: string
+                    maxLength: 120
+                  schedule:
+                    type: string
+                    maxLength: 80
+                  status:
+                    type: string
+                    enum:
+                    - published
+                    - draft
+                  publishedVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  updatedAt:
+                    type: string
+                    format: date-time
+                  criteriaVersionId:
+                    type: string
+                    maxLength: 140
+                  testVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+  /hr/applications:
+    get:
+      tags:
+      - Отклики
+      summary: Список откликов
+      operationId: get_hr_applications
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        applicationId:
+                          type: string
+                          maxLength: 140
+                        vacancyId:
+                          type: string
+                          maxLength: 140
+                        vacancyTitle:
+                          type: string
+                        fullName:
+                          type: string
+                          maxLength: 160
+                        contact:
+                          type: string
+                        receivedAt:
+                          type: string
+                          format: date-time
+                        sourceChannel:
+                          type: string
+                          enum:
+                          - public_form
+                          - email
+                          - archive
+                          - manual
+                          - unknown
+                        stage:
+                          type: string
+                          enum:
+                          - received
+                          - review
+                          - interview
+                          - decision
+                        outcome:
+                          anyOf:
+                          - type: string
+                            enum:
+                            - hired
+                            - rejected
+                          - type: 'null'
+                        assessmentStatus:
+                          type: string
+                          enum:
+                          - pending
+                          - ready
+                          - failed
+                        candidateId:
+                          anyOf:
+                          - type: string
+                            maxLength: 140
+                          - type: 'null'
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+      - name: vacancyId
+        in: query
+        schema:
+          type: string
+          maxLength: 140
+      - name: q
+        in: query
+        schema:
+          type: string
+      - name: stage
+        in: query
+        schema:
+          type: string
+      - name: channel
+        in: query
+        schema:
+          type: string
+          enum:
+          - public_form
+          - email
+          - archive
+          - manual
+          - unknown
+    post:
+      tags:
+      - Отклики
+      summary: Добавить отклик из почты или архива
+      operationId: post_hr_applications
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  receiptNumber:
+                    type: string
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vacancyId:
+                  type: string
+                  maxLength: 140
+                fullName:
+                  type: string
+                  maxLength: 160
+                contact:
+                  type: string
+                  maxLength: 254
+                  format: email
+                resumeText:
+                  type: string
+                  maxLength: 20000
+                sourceChannel:
+                  type: string
+                  enum:
+                  - email
+                  - archive
+                  - manual
+                  - unknown
+                sourceReceivedAt:
+                  type: string
+              required:
+              - vacancyId
+              - fullName
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                vacancyId:
+                  type: string
+                  maxLength: 140
+                fullName:
+                  type: string
+                  maxLength: 160
+                contact:
+                  type: string
+                  maxLength: 254
+                  format: email
+                resumeText:
+                  type: string
+                  maxLength: 20000
+                sourceChannel:
+                  type: string
+                  enum:
+                  - email
+                  - archive
+                  - manual
+                  - unknown
+                sourceReceivedAt:
+                  type: string
+                resumeFile:
+                  type: string
+                  format: binary
+              required:
+              - vacancyId
+              - fullName
+  /hr/application-imports:
+    post:
+      tags:
+      - Отклики
+      summary: Импортировать архив JSON
+      operationId: post_hr_application_imports
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        applicationId:
+                          type: string
+                          maxLength: 140
+                        receiptNumber:
+                          type: string
+                        assessmentStatus:
+                          type: string
+                          enum:
+                          - pending
+                          - ready
+                          - failed
+                    maxItems: 20
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                          minimum: 0
+                        code:
+                          type: string
+                        message:
+                          type: string
+                    maxItems: 20
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vacancyId:
+                  type: string
+                  maxLength: 140
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      vacancyId:
+                        type: string
+                        maxLength: 140
+                      fullName:
+                        type: string
+                        maxLength: 160
+                      contact:
+                        type: string
+                        maxLength: 254
+                        format: email
+                      resumeText:
+                        type: string
+                        maxLength: 20000
+                      sourceReceivedAt:
+                        type: string
+                    required:
+                    - fullName
+                    - resumeText
+                  maxItems: 20
+              required:
+              - items
+  /hr/archive-example:
+    get:
+      tags:
+      - Отклики
+      summary: Получить пример входного архива
+      operationId: get_hr_archive_example
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        vacancyId:
+                          type: string
+                          maxLength: 140
+                        fullName:
+                          type: string
+                          maxLength: 160
+                        contact:
+                          type: string
+                          maxLength: 254
+                          format: email
+                        resumeText:
+                          type: string
+                          maxLength: 20000
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+  /hr/applications/{id}:
+    get:
+      tags:
+      - Отклики
+      summary: Карточка отклика и сохранённый тест
+      operationId: get_hr_applications_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  vacancyId:
+                    type: string
+                    maxLength: 140
+                  vacancyTitle:
+                    type: string
+                  fullName:
+                    type: string
+                    maxLength: 160
+                  contact:
+                    type: string
+                  receivedAt:
+                    type: string
+                    format: date-time
+                  sourceChannel:
+                    type: string
+                    enum:
+                    - public_form
+                    - email
+                    - archive
+                    - manual
+                    - unknown
+                  stage:
+                    type: object
+                    properties:
+                      currentStage:
+                        type: string
+                        enum:
+                        - received
+                        - review
+                        - interview
+                        - decision
+                      outcome:
+                        anyOf:
+                        - type: string
+                          enum:
+                          - hired
+                          - rejected
+                        - type: 'null'
+                      version:
+                        type: integer
+                        minimum: 0
+                      rejectedAtStage:
+                        anyOf:
+                        - type: string
+                          enum:
+                          - received
+                          - review
+                          - interview
+                          - decision
+                        - type: 'null'
+                      interviewId:
+                        anyOf:
+                        - type: string
+                          maxLength: 140
+                        - type: 'null'
+                      interviewCompletedAt:
+                        type: string
+                        format: date-time
+                      employmentId:
+                        anyOf:
+                        - type: string
+                          maxLength: 140
+                        - type: 'null'
+                      transitions:
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                          - start_review
+                          - invite_interview
+                          - complete_interview
+                          - move_to_decision
+                          - reject
+                          - hire
+                  outcome:
+                    anyOf:
+                    - type: string
+                      enum:
+                      - hired
+                      - rejected
+                    - type: 'null'
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+                  candidateId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  criteriaVersionId:
+                    type: string
+                    maxLength: 140
+                  testVersionId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  testStatus:
+                    type: string
+                    enum:
+                    - not_required
+                    - completed
+                    - not_completed
+                  sourceReceivedAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  importedAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  acceptedAt:
+                    type: string
+                    format: date-time
+                  resumeSource:
+                    type: object
+                    properties:
+                      sourceId:
+                        type: string
+                        maxLength: 140
+                      applicationId:
+                        type: string
+                        maxLength: 140
+                      text:
+                        type: string
+                      type:
+                        type: string
+                        enum:
+                        - resume
+                        - clarification
+                      attachment:
+                        anyOf:
+                        - type: object
+                          properties:
+                            name:
+                              type: string
+                            size:
+                              type: integer
+                              minimum: 0
+                            type:
+                              type: string
+                        - type: 'null'
+                      extractStatus:
+                        type: string
+                        enum:
+                        - not_needed
+                        - manual
+                        - truncated
+                        - extracted
+                  clarificationThreadId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  answers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        questionId:
+                          type: string
+                          maxLength: 140
+                        question:
+                          type: string
+                        value:
+                          type: string
+                        required:
+                          type: boolean
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/applications/{id}/candidate:
+    put:
+      tags:
+      - Кандидаты
+      summary: Подтвердить привязку заявки
+      operationId: put_hr_applications_id_candidate
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  candidateId:
+                    type: string
+                    maxLength: 140
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                candidateId:
+                  type: string
+                  maxLength: 140
+              required:
+              - candidateId
+  /hr/applications/{id}/assessment:
+    get:
+      tags:
+      - Отклики
+      summary: Разбор по критериям
+      operationId: get_hr_applications_id_assessment
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+                  criteriaVersionId:
+                    type: string
+                    maxLength: 140
+                  assessmentId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        criterionId:
+                          type: string
+                          maxLength: 140
+                        label:
+                          type: string
+                        required:
+                          type: boolean
+                        status:
+                          type: string
+                          enum:
+                          - matched
+                          - partial
+                          - needs_clarification
+                          - not_met
+                        evidence:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              sourceId:
+                                type: string
+                                maxLength: 140
+                              type:
+                                type: string
+                                enum:
+                                - resume
+                                - test
+                                - clarification
+                              quote:
+                                type: string
+                              offset:
+                                type: integer
+                                minimum: 0
+                          maxItems: 3
+                        question:
+                          anyOf:
+                          - type: string
+                          - type: 'null'
+                        hrOverride:
+                          anyOf:
+                          - type: object
+                            properties:
+                              status:
+                                type: string
+                                enum:
+                                - matched
+                                - partial
+                                - needs_clarification
+                                - not_met
+                              reason:
+                                type: string
+                              actorId:
+                                type: string
+                                maxLength: 140
+                              actorName:
+                                type: string
+                              at:
+                                type: string
+                                format: date-time
+                          - type: 'null'
+                    maxItems: 8
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/applications/{id}/assessment/{criterionId}:
+    patch:
+      tags:
+      - Отклики
+      summary: Сохранить отдельную правку HR
+      operationId: patch_hr_applications_id_assessment_criterionId
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessmentStatus:
+                    type: string
+                    enum:
+                    - pending
+                    - ready
+                    - failed
+                  criteriaVersionId:
+                    type: string
+                    maxLength: 140
+                  assessmentId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        criterionId:
+                          type: string
+                          maxLength: 140
+                        label:
+                          type: string
+                        required:
+                          type: boolean
+                        status:
+                          type: string
+                          enum:
+                          - matched
+                          - partial
+                          - needs_clarification
+                          - not_met
+                        evidence:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              sourceId:
+                                type: string
+                                maxLength: 140
+                              type:
+                                type: string
+                                enum:
+                                - resume
+                                - test
+                                - clarification
+                              quote:
+                                type: string
+                              offset:
+                                type: integer
+                                minimum: 0
+                          maxItems: 3
+                        question:
+                          anyOf:
+                          - type: string
+                          - type: 'null'
+                        hrOverride:
+                          anyOf:
+                          - type: object
+                            properties:
+                              status:
+                                type: string
+                                enum:
+                                - matched
+                                - partial
+                                - needs_clarification
+                                - not_met
+                              reason:
+                                type: string
+                              actorId:
+                                type: string
+                                maxLength: 140
+                              actorName:
+                                type: string
+                              at:
+                                type: string
+                                format: date-time
+                          - type: 'null'
+                    maxItems: 8
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: criterionId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                  - matched
+                  - partial
+                  - needs_clarification
+                  - not_met
+                reason:
+                  type: string
+                  maxLength: 1200
+              required:
+              - status
+              - reason
+  /hr/applications/{id}/stage:
+    get:
+      tags:
+      - Этапы
+      summary: Текущее состояние и доступные действия
+      operationId: get_hr_applications_id_stage
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currentStage:
+                    type: string
+                    enum:
+                    - received
+                    - review
+                    - interview
+                    - decision
+                  outcome:
+                    anyOf:
+                    - type: string
+                      enum:
+                      - hired
+                      - rejected
+                    - type: 'null'
+                  version:
+                    type: integer
+                    minimum: 0
+                  rejectedAtStage:
+                    anyOf:
+                    - type: string
+                      enum:
+                      - received
+                      - review
+                      - interview
+                      - decision
+                    - type: 'null'
+                  interviewId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  interviewCompletedAt:
+                    type: string
+                    format: date-time
+                  employmentId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  transitions:
+                    type: array
+                    items:
+                      type: string
+                      enum:
+                      - start_review
+                      - invite_interview
+                      - complete_interview
+                      - move_to_decision
+                      - reject
+                      - hire
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/applications/{id}/transitions:
+    post:
+      tags:
+      - Этапы
+      summary: Переход по воронке или решение HR
+      operationId: post_hr_applications_id_transitions
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stage:
+                    type: string
+                    enum:
+                    - received
+                    - review
+                    - interview
+                    - decision
+                  outcome:
+                    anyOf:
+                    - type: string
+                      enum:
+                      - hired
+                      - rejected
+                    - type: 'null'
+                  eventId:
+                    type: string
+                    maxLength: 140
+                  employmentId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum:
+                  - start_review
+                  - invite_interview
+                  - complete_interview
+                  - move_to_decision
+                  - reject
+                  - hire
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+                  maxLength: 1200
+              required:
+              - action
+              - expectedVersion
+  /hr/applications/{id}/history:
+    get:
+      tags:
+      - Этапы
+      summary: История переходов
+      operationId: get_hr_applications_id_history
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fromStage:
+                          anyOf:
+                          - type: string
+                            enum:
+                            - received
+                            - review
+                            - interview
+                            - decision
+                          - type: 'null'
+                        toStage:
+                          type: string
+                          enum:
+                          - received
+                          - review
+                          - interview
+                          - decision
+                        action:
+                          type: string
+                        outcome:
+                          anyOf:
+                          - type: string
+                            enum:
+                            - hired
+                            - rejected
+                          - type: 'null'
+                        actorId:
+                          type: string
+                          maxLength: 140
+                        actorName:
+                          type: string
+                        occurredAt:
+                          type: string
+                          format: date-time
+                        reason:
+                          type: string
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+  /hr/resume-sources/{id}:
+    get:
+      tags:
+      - Отклики
+      summary: Исходник и скачивание файла
+      operationId: get_hr_resume_sources_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sourceId:
+                    type: string
+                    maxLength: 140
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  text:
+                    type: string
+                  type:
+                    type: string
+                    enum:
+                    - resume
+                    - clarification
+                  attachment:
+                    anyOf:
+                    - type: object
+                      properties:
+                        name:
+                          type: string
+                        size:
+                          type: integer
+                          minimum: 0
+                        type:
+                          type: string
+                    - type: 'null'
+                  extractStatus:
+                    type: string
+                    enum:
+                    - not_needed
+                    - manual
+                    - truncated
+                    - extracted
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: download
+        in: query
+        schema:
+          type: string
+          enum:
+          - '1'
+  /hr/clarifications/{id}:
+    get:
+      tags:
+      - Отклики
+      summary: Вопросы и сохранённые уточнения кандидата
+      operationId: get_hr_clarifications_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threadId:
+                    type: string
+                    maxLength: 140
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        questionId:
+                          type: string
+                          maxLength: 140
+                        text:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                          - open
+                          - answered
+                        answer:
+                          type: string
+                        criterionId:
+                          type: string
+                          maxLength: 140
+                    maxItems: 8
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/clarifications/{id}/links:
+    post:
+      tags:
+      - Отклики
+      summary: Подготовить ссылку для проверенного контакта
+      operationId: post_hr_clarifications_id_links
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expiresAt:
+                    type: string
+                    format: date-time
+                  link:
+                    type: string
+                    format: uri
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                contactVerified:
+                  type: boolean
+              required:
+              - contactVerified
+  /hr/candidates:
+    get:
+      tags:
+      - Кандидаты
+      summary: Поиск профилей по ФИО
+      operationId: get_hr_candidates
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        fullName:
+                          type: string
+                          maxLength: 160
+                        contact:
+                          type: string
+                          maxLength: 254
+                          format: email
+                        education:
+                          type: string
+                          maxLength: 500
+                        experience:
+                          type: string
+                          maxLength: 1000
+                        candidateId:
+                          type: string
+                          maxLength: 140
+                        updatedAt:
+                          type: string
+                          format: date-time
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+      - name: q
+        in: query
+        schema:
+          type: string
+          maxLength: 160
+    post:
+      tags:
+      - Кандидаты
+      summary: Создать профиль кандидата
+      operationId: post_hr_candidates
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fullName:
+                    type: string
+                    maxLength: 160
+                  contact:
+                    type: string
+                    maxLength: 254
+                    format: email
+                  education:
+                    type: string
+                    maxLength: 500
+                  experience:
+                    type: string
+                    maxLength: 1000
+                  candidateId:
+                    type: string
+                    maxLength: 140
+                  updatedAt:
+                    type: string
+                    format: date-time
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+                  maxLength: 160
+                contact:
+                  type: string
+                  maxLength: 254
+                  format: email
+                education:
+                  type: string
+                  maxLength: 500
+                experience:
+                  type: string
+                  maxLength: 1000
+              required:
+              - fullName
+  /hr/candidates/{id}:
+    get:
+      tags:
+      - Кандидаты
+      summary: Профиль, источник сведений и история заявок
+      operationId: get_hr_candidates_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fullName:
+                    type: string
+                    maxLength: 160
+                  contact:
+                    type: string
+                    maxLength: 254
+                    format: email
+                  education:
+                    type: string
+                    maxLength: 500
+                  experience:
+                    type: string
+                    maxLength: 1000
+                  candidateId:
+                    type: string
+                    maxLength: 140
+                  updatedAt:
+                    type: string
+                    format: date-time
+                  factsSource:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                        - hr
+                        - resume
+                      actorName:
+                        type: string
+                      at:
+                        type: string
+                        format: date-time
+                      applicationId:
+                        type: string
+                        maxLength: 140
+                  applicationIds:
+                    type: array
+                    items:
+                      type: string
+                      maxLength: 140
+                  applications:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        applicationId:
+                          type: string
+                          maxLength: 140
+                        vacancyId:
+                          type: string
+                          maxLength: 140
+                        vacancyTitle:
+                          type: string
+                        fullName:
+                          type: string
+                          maxLength: 160
+                        contact:
+                          type: string
+                        receivedAt:
+                          type: string
+                          format: date-time
+                        sourceChannel:
+                          type: string
+                          enum:
+                          - public_form
+                          - email
+                          - archive
+                          - manual
+                          - unknown
+                        stage:
+                          type: string
+                          enum:
+                          - received
+                          - review
+                          - interview
+                          - decision
+                        outcome:
+                          anyOf:
+                          - type: string
+                            enum:
+                            - hired
+                            - rejected
+                          - type: 'null'
+                        assessmentStatus:
+                          type: string
+                          enum:
+                          - pending
+                          - ready
+                          - failed
+                        candidateId:
+                          anyOf:
+                          - type: string
+                            maxLength: 140
+                          - type: 'null'
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+  /hr/interviews/{id}:
+    get:
+      tags:
+      - Этапы
+      summary: Интервью и ссылка на приглашение
+      operationId: get_hr_interviews_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  interviewId:
+                    type: string
+                    maxLength: 140
+                  completedAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  invitationId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/interviews/{id}/survey-invitations:
+    post:
+      tags:
+      - Анкеты
+      summary: Подготовить анкету после интервью
+      operationId: post_hr_interviews_id_survey_invitations
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitationId:
+                    type: string
+                    maxLength: 140
+                  type:
+                    type: string
+                    enum:
+                    - interview_feedback
+                    - exit_feedback
+                  status:
+                    type: string
+                    enum:
+                    - prepared
+                    - sent
+                    - answered
+                    - no_contact
+                    - expired
+                  expiresAt:
+                    type: string
+                    format: date-time
+                  sentAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  fullName:
+                    type: string
+                  vacancyTitle:
+                    type: string
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  link:
+                    anyOf:
+                    - type: string
+                      format: uri
+                    - type: 'null'
+                  contact:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                  response:
+                    anyOf:
+                    - type: object
+                      properties:
+                        answers:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              questionId:
+                                type: string
+                                maxLength: 140
+                              value:
+                                oneOf:
+                                - type: integer
+                                  minimum: 1
+                                  maximum: 5
+                                - type: string
+                                  maxLength: 1200
+                            required:
+                            - questionId
+                            - value
+                          maxItems: 3
+                        answeredAt:
+                          type: string
+                          format: date-time
+                    - type: 'null'
+                  letter:
+                    anyOf:
+                    - type: object
+                      properties:
+                        subject:
+                          type: string
+                        text:
+                          type: string
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+  /hr/employments/{id}:
+    get:
+      tags:
+      - Этапы
+      summary: Состояние трудоустройства
+      operationId: get_hr_employments_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  employmentId:
+                    type: string
+                    maxLength: 140
+                  status:
+                    type: string
+                    enum:
+                    - active
+                    - terminated
+                  startedAt:
+                    type: string
+                    format: date-time
+                  termination:
+                    anyOf:
+                    - type: object
+                      properties:
+                        effectiveAt:
+                          type: string
+                          format: date-time
+                        reasonCategory:
+                          type: string
+                        invitationId:
+                          anyOf:
+                          - type: string
+                            maxLength: 140
+                          - type: 'null'
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/employments/{id}/terminations:
+    post:
+      tags:
+      - Этапы
+      summary: Зафиксировать увольнение
+      operationId: post_hr_employments_id_terminations
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  terminationId:
+                    type: string
+                    maxLength: 140
+                  employmentStatus:
+                    type: string
+                    enum:
+                    - terminated
+                  surveyInvitationId:
+                    anyOf:
+                    - type: string
+                      maxLength: 140
+                    - type: 'null'
+                  linkStatus:
+                    anyOf:
+                    - type: string
+                      enum:
+                      - prepared
+                      - no_contact
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                effectiveAt:
+                  type: string
+                  format: date
+                reasonCategory:
+                  type: string
+                  enum:
+                  - employer_initiated
+                  - voluntary
+                  - agreement
+                  - other
+              required:
+              - effectiveAt
+              - reasonCategory
+  /hr/survey-invitations:
+    get:
+      tags:
+      - Анкеты
+      summary: Список приглашений
+      operationId: get_hr_survey_invitations
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        invitationId:
+                          type: string
+                          maxLength: 140
+                        type:
+                          type: string
+                          enum:
+                          - interview_feedback
+                          - exit_feedback
+                        status:
+                          type: string
+                          enum:
+                          - prepared
+                          - sent
+                          - answered
+                          - no_contact
+                          - expired
+                        expiresAt:
+                          type: string
+                          format: date-time
+                        sentAt:
+                          anyOf:
+                          - type: string
+                            format: date-time
+                          - type: 'null'
+                        fullName:
+                          type: string
+                        vacancyTitle:
+                          type: string
+                        applicationId:
+                          type: string
+                          maxLength: 140
+                    maxItems: 50
+                  nextCursor:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                required:
+                - items
+                - nextCursor
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 24
+      - name: cursor
+        in: query
+        schema:
+          type: string
+      - name: type
+        in: query
+        schema:
+          type: string
+          enum:
+          - interview_feedback
+          - exit_feedback
+  /hr/survey-invitations/{id}:
+    get:
+      tags:
+      - Анкеты
+      summary: Приглашение и ответ при наличии прав
+      operationId: get_hr_survey_invitations_id
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitationId:
+                    type: string
+                    maxLength: 140
+                  type:
+                    type: string
+                    enum:
+                    - interview_feedback
+                    - exit_feedback
+                  status:
+                    type: string
+                    enum:
+                    - prepared
+                    - sent
+                    - answered
+                    - no_contact
+                    - expired
+                  expiresAt:
+                    type: string
+                    format: date-time
+                  sentAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  fullName:
+                    type: string
+                  vacancyTitle:
+                    type: string
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  link:
+                    anyOf:
+                    - type: string
+                      format: uri
+                    - type: 'null'
+                  contact:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                  response:
+                    anyOf:
+                    - type: object
+                      properties:
+                        answers:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              questionId:
+                                type: string
+                                maxLength: 140
+                              value:
+                                oneOf:
+                                - type: integer
+                                  minimum: 1
+                                  maximum: 5
+                                - type: string
+                                  maxLength: 1200
+                            required:
+                            - questionId
+                            - value
+                          maxItems: 3
+                        answeredAt:
+                          type: string
+                          format: date-time
+                    - type: 'null'
+                  letter:
+                    anyOf:
+                    - type: object
+                      properties:
+                        subject:
+                          type: string
+                        text:
+                          type: string
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+  /hr/survey-invitations/{id}/mark-sent:
+    post:
+      tags:
+      - Анкеты
+      summary: Зафиксировать ручную отправку анкеты
+      operationId: post_hr_survey_invitations_id_mark_sent
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitationId:
+                    type: string
+                    maxLength: 140
+                  type:
+                    type: string
+                    enum:
+                    - interview_feedback
+                    - exit_feedback
+                  status:
+                    type: string
+                    enum:
+                    - prepared
+                    - sent
+                    - answered
+                    - no_contact
+                    - expired
+                  expiresAt:
+                    type: string
+                    format: date-time
+                  sentAt:
+                    anyOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+                  fullName:
+                    type: string
+                  vacancyTitle:
+                    type: string
+                  applicationId:
+                    type: string
+                    maxLength: 140
+                  link:
+                    anyOf:
+                    - type: string
+                      format: uri
+                    - type: 'null'
+                  contact:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                  response:
+                    anyOf:
+                    - type: object
+                      properties:
+                        answers:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              questionId:
+                                type: string
+                                maxLength: 140
+                              value:
+                                oneOf:
+                                - type: integer
+                                  minimum: 1
+                                  maximum: 5
+                                - type: string
+                                  maxLength: 1200
+                            required:
+                            - questionId
+                            - value
+                          maxItems: 3
+                        answeredAt:
+                          type: string
+                          format: date-time
+                    - type: 'null'
+                  letter:
+                    anyOf:
+                    - type: object
+                      properties:
+                        subject:
+                          type: string
+                        text:
+                          type: string
+                    - type: 'null'
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 140
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: ^[a-zA-Z0-9._-]+$
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+  /hr/analytics:
+    get:
+      tags:
+      - Аналитика
+      summary: Воронка найма и агрегаты анкет
+      operationId: get_hr_analytics
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totals:
+                    type: object
+                    properties:
+                      received:
+                        type: integer
+                        minimum: 0
+                      interview:
+                        type: integer
+                        minimum: 0
+                      hired:
+                        type: integer
+                        minimum: 0
+                      rejected:
+                        type: integer
+                        minimum: 0
+                  funnel:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        stage:
+                          type: string
+                          enum:
+                          - received
+                          - review
+                          - interview
+                          - decision
+                        reached:
+                          type: integer
+                          minimum: 0
+                        current:
+                          type: integer
+                          minimum: 0
+                        rejected:
+                          type: integer
+                          minimum: 0
+                  surveys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                          - interview_feedback
+                          - exit_feedback
+                        sent:
+                          type: integer
+                          minimum: 0
+                        answered:
+                          type: integer
+                          minimum: 0
+                        averages:
+                          type: object
+                          properties:
+                            clarity:
+                              anyOf:
+                              - type: number
+                              - type: 'null'
+                            communication:
+                              anyOf:
+                              - type: number
+                              - type: 'null'
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        value:
+                          type: integer
+                          minimum: 0
+                    maxItems: 31
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+      - staffCookie: []
+      parameters:
+      - name: vacancyId
+        in: query
+        schema:
+          type: string
+          maxLength: 140
+      - name: from
+        in: query
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        schema:
+          type: string
+          format: date
+components:
+  securitySchemes:
+    staffCookie:
+      type: apiKey
+      in: cookie
+      name: kadry_hr
+      description: Самостоятельный хостинг. Закрытое демо использует авторизацию платформы.
+    guestCookie:
+      type: apiKey
+      in: cookie
+      name: kadry_guest
+      description: Гостевая сессия с доступом к своему подтверждению и чату.
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+            required:
+            - field
+            - code
+      required:
+      - code
+      - message
+      - fields

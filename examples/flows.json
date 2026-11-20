@@ -1,0 +1,46 @@
+{
+  "publicApplication": {
+    "request": {
+      "vacancyId": "vacancy_1",
+      "publishedVersionId": "v1",
+      "fullName": "Пример Кандидата",
+      "contact": "candidate@example.com",
+      "resumeText": "Писала SQL-запросы для отчётности.",
+      "testVersionId": "t1",
+      "answers": [{"questionId": "project", "value": "Собрала отчёт по обращениям."}]
+    },
+    "response": {"applicationId": "a1", "receiptNumber": "A1B2C3D4E5F6", "assessmentStatus": "pending"},
+    "error": {"code": "vacancy_version_changed", "message": "Вакансия обновилась. Откройте форму ещё раз.", "fields": []}
+  },
+  "archive": {
+    "request": {"vacancyId": "vacancy_1", "items": [{"fullName": "Пример Кандидата", "resumeText": "Готовил отчёты", "sourceReceivedAt": "2026-11-17"}]},
+    "response": {"accepted": [{"applicationId": "a2", "receiptNumber": "A2B2C3D4E5F6", "assessmentStatus": "pending"}], "errors": []},
+    "error": {"code": "validation_failed", "message": "Добавьте хотя бы один отклик.", "fields": [{"field": "items", "code": "required"}]}
+  },
+  "assessment": {
+    "response": {"assessmentStatus": "ready", "assessmentId": "a1", "criteriaVersionId": "cv1", "items": [{"criterionId": "req_sql", "label": "Практический опыт SQL", "required": true, "status": "matched", "evidence": [{"sourceId": "src_1", "type": "resume", "quote": "Писала SQL-запросы для отчётности.", "offset": 0}], "question": null, "hrOverride": null}]},
+    "error": {"code": "forbidden", "message": "У вас нет доступа к этой записи.", "fields": []}
+  },
+  "transition": {
+    "request": {"action": "hire", "expectedVersion": 4},
+    "response": {"stage": "decision", "outcome": "hired", "eventId": "e2", "employmentId": "emp1"},
+    "error": {"code": "version_conflict", "message": "Запись уже обновилась. Откройте её снова.", "fields": []}
+  },
+  "termination": {
+    "request": {"effectiveAt": "2026-11-20", "reasonCategory": "employer_initiated"},
+    "response": {"terminationId": "term1", "employmentStatus": "terminated", "surveyInvitationId": "inv1", "linkStatus": "prepared"},
+    "error": {"code": "employment_terminated", "message": "Увольнение уже оформлено.", "fields": []}
+  },
+  "publicSurvey": {
+    "request": {"answers": [{"questionId": "clarity", "value": 4}, {"questionId": "communication", "value": 5}]},
+    "response": {"responseId": "r1"},
+    "error": {"code": "link_unavailable", "message": "Срок действия ссылки истёк или она уже использована.", "fields": []}
+  },
+  "events": [
+    {"eventId": "e1", "type": "application.created", "schemaVersion": 1, "occurredAt": "2026-11-20T12:00:00.000Z", "payload": {"applicationId": "a1", "vacancyId": "vacancy_1", "criteriaVersionId": "cv1", "sourceChannel": "public_form", "receivedAt": "2026-11-20T12:00:00.000Z"}},
+    {"eventId": "e3", "type": "clarification.answered", "schemaVersion": 1, "occurredAt": "2026-11-20T12:15:00.000Z", "payload": {"applicationId": "a1", "threadId": "th1", "questionId": "q1", "criterionId": "req_sql", "answerId": "src_2"}},
+    {"eventId": "e2", "type": "application.stage_changed", "schemaVersion": 1, "occurredAt": "2026-11-20T12:30:00.000Z", "payload": {"applicationId": "a1", "fromStage": "decision", "toStage": "decision", "outcome": "hired", "actorId": "hr1"}},
+    {"eventId": "e4", "type": "employment.terminated", "schemaVersion": 1, "occurredAt": "2026-11-20T13:00:00.000Z", "payload": {"employmentId": "emp1", "terminationId": "term1", "effectiveAt": "2026-11-20T00:00:00.000Z", "reasonCategory": "employer_initiated"}},
+    {"eventId": "e5", "type": "survey.responded", "schemaVersion": 1, "occurredAt": "2026-11-20T13:15:00.000Z", "payload": {"invitationId": "inv1", "surveyType": "exit_feedback", "responseId": "r1"}}
+  ]
+}
