@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Кадры · Горький
-  version: 1.0.0
+  version: 1.3.0
   description: Контракт муниципального подбора. Идентификаторы непрозрачные. Даты ISO 8601. Для PDF, DOCX и TXT до 5 МБ используйте
     multipart/form-data. В этом формате answers — JSON-строка.
 servers:
@@ -42,6 +42,7 @@ paths:
                           enum:
                           - admin
                           - hr
+                          - department
                         hosted:
                           type: boolean
                     - type: 'null'
@@ -74,6 +75,7 @@ paths:
                     enum:
                     - admin
                     - hr
+                    - department
                   name:
                     type: string
         default:
@@ -454,6 +456,9 @@ paths:
               schema:
                 type: object
                 properties:
+                  stage: {type: string, enum: [received, review, interview, decision]}
+                  outcome: {type: [string, 'null'], enum: [hired, rejected, null]}
+                  candidateMessage: {type: [string, 'null']}
                   receiptNumber:
                     type: string
                     maxLength: 140
@@ -497,6 +502,7 @@ paths:
               schema:
                 type: object
                 properties:
+                  closed: {type: boolean}
                   threadId:
                     type: string
                     maxLength: 140
@@ -656,11 +662,15 @@ paths:
               schema:
                 type: object
                 properties:
+                  submitted:
+                    type: boolean
+                    description: Для ранее заполненной анкеты возвращается только это поле со значением true.
                   type:
                     type: string
                     enum:
                     - interview_feedback
                     - exit_feedback
+                    - voluntary_exit
                   title:
                     type: string
                   audience:
@@ -679,6 +689,7 @@ paths:
                           type: string
                           enum:
                           - rating
+                          - choice
                           - text
                         required:
                           type: boolean
@@ -1010,6 +1021,7 @@ paths:
                 slug:
                   type: string
                   maxLength: 90
+                requisitionId: {type: string}
                 title:
                   type: string
                   maxLength: 150
@@ -1148,6 +1160,9 @@ paths:
                   updatedAt:
                     type: string
                     format: date-time
+                  draftNumber: {type: integer, minimum: 1}
+                  draftAuthor: {type: [object, 'null']}
+                  approval: {type: [object, 'null']}
                   draft:
                     type: object
                     properties:
@@ -1637,6 +1652,11 @@ paths:
                         applicationId:
                           type: string
                           maxLength: 140
+                        handoffStatus: {type: [string, 'null'], enum: [waiting, answered, null]}
+                        reviewProgress:
+                          anyOf:
+                          - $ref: '#/components/schemas/ReviewProgress'
+                          - type: 'null'
                         triage:
                           $ref: '#/components/schemas/IntakeTriage'
                         vacancyId:
@@ -1742,6 +1762,12 @@ paths:
           - archive
           - manual
           - unknown
+      - name: priority
+        in: query
+        schema: {type: string, enum: ['on'], description: 'Требует vacancyId'}
+      - name: handoff
+        in: query
+        schema: {type: string, enum: [waiting, answered]}
       - name: triage
         in: query
         schema:
@@ -1749,7 +1775,7 @@ paths:
     post:
       tags:
       - Отклики
-      summary: Добавить отклик из почты или архива
+      summary: Зарегистрировать поступивший отклик
       operationId: post_hr_applications
       responses:
         '201':
@@ -1845,6 +1871,7 @@ paths:
                   - unknown
                 sourceReceivedAt:
                   type: string
+                fileIntake: {type: string, enum: ['on']}
                 resumeFile:
                   type: string
                   format: binary
@@ -1855,7 +1882,7 @@ paths:
     post:
       tags:
       - Отклики
-      summary: Импортировать архив JSON
+      summary: Зарегистрировать пакет поступивших откликов
       operationId: post_hr_application_imports
       responses:
         '201':
@@ -1882,6 +1909,16 @@ paths:
                           - ready
                           - failed
                     maxItems: 20
+                  duplicates:
+                    type: array
+                    maxItems: 20
+                    items:
+                      type: object
+                      required: [index, applicationId, receiptNumber]
+                      properties:
+                        index: {type: integer, minimum: 0}
+                        applicationId: {type: string}
+                        receiptNumber: {type: string}
                   errors:
                     type: array
                     items:
@@ -1922,11 +1959,16 @@ paths:
                 vacancyId:
                   type: string
                   maxLength: 140
+                sourceChannel: {type: string, enum: [email, archive, manual, unknown]}
+                sourceAccount: {type: string, maxLength: 160}
                 items:
                   type: array
                   items:
                     type: object
                     properties:
+                      deliveryId: {type: string, maxLength: 250}
+                      sourceChannel: {type: string, enum: [email, archive, manual, unknown]}
+                      sourceAccount: {type: string, maxLength: 160}
                       vacancyId:
                         type: string
                         maxLength: 140
@@ -2142,6 +2184,7 @@ paths:
                         enum:
                         - resume
                         - clarification
+                        - interview
                       attachment:
                         anyOf:
                         - type: object
@@ -2250,6 +2293,67 @@ paths:
                   maxLength: 140
               required:
               - candidateId
+  /hr/applications/{id}/interview-plan:
+    get:
+      tags: [Отклики]
+      summary: Подобрать вопросы и смежные вакансии по источникам отклика
+      operationId: get_hr_interview_plan
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/RecordId'
+      responses:
+        '200':
+          description: Локальный план интервью и вакансии в порядке покрытия требований
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [questions, alternatives, comparedVacancies, moreVacancies, canRefine]
+                properties:
+                  questions:
+                    type: array
+                    maxItems: 6
+                    items:
+                      $ref: '#/components/schemas/InterviewPlanQuestion'
+                  alternatives:
+                    type: array
+                    maxItems: 3
+                    items:
+                      type: object
+                      required: [vacancyId, title, department, required, supportedRequired, evidence, questions]
+                      properties:
+                        vacancyId: {type: string}
+                        title: {type: string}
+                        department: {type: string}
+                        required: {type: integer, minimum: 0}
+                        supportedRequired: {type: integer, minimum: 0}
+                        evidence:
+                          type: array
+                          maxItems: 2
+                          items:
+                            allOf:
+                            - $ref: '#/components/schemas/InterviewEvidence'
+                            - type: object
+                              properties:
+                                label: {type: string}
+                        questions:
+                          type: array
+                          maxItems: 3
+                          items:
+                            $ref: '#/components/schemas/InterviewPlanQuestion'
+                  comparedVacancies: {type: integer, minimum: 0, maximum: 40}
+                  moreVacancies: {type: boolean}
+                  notes:
+                    type: array
+                    maxItems: 30
+                    items:
+                      $ref: '#/components/schemas/InterviewNote'
+                  canRefine: {type: boolean}
+        '401':
+          description: Требуется вход в кабинет HR
+        '409':
+          description: Разбор отклика ещё выполняется
   /hr/applications/{id}/interview-draft:
     post:
       tags: [Отклики]
@@ -2270,10 +2374,15 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object}
+            schema:
+              type: object
+              properties:
+                priorityOnly:
+                  type: boolean
+                  description: Переформулировать до двух приоритетных вопросов из локального плана.
       responses:
         '200':
-          description: Предложения YandexGPT с локальными заменами или вопросы вакансии
+          description: Локальные формулировки и доступные варианты от настроенной модели
           content:
             application/json:
               schema:
@@ -2290,6 +2399,8 @@ paths:
                         criterionId: {type: string}
                         label: {type: string}
                         question: {type: string}
+                        reason: {type: string, enum: [required_gap, optional_gap, verify_evidence, opening]}
+                        source: {type: string, enum: [local, model]}
         '401':
           description: Требуется вход в кабинет HR
         '409':
@@ -2355,6 +2466,7 @@ paths:
                                 - resume
                                 - test
                                 - clarification
+                                - interview
                               quote:
                                 type: string
                               offset:
@@ -2464,6 +2576,7 @@ paths:
                                 - resume
                                 - test
                                 - clarification
+                                - interview
                               quote:
                                 type: string
                               offset:
@@ -2697,13 +2810,19 @@ paths:
                   - start_review
                   - invite_interview
                   - complete_interview
+                  - schedule_followup
                   - move_to_decision
                   - reject
                   - hire
                 expectedVersion:
                   type: integer
                   minimum: 0
+                scheduledAt: {type: string, format: date-time}
+                format: {type: string, enum: [phone, onsite]}
+                interviewResult: {type: string, enum: [proceed, clarify, decline]}
+                candidateMessage: {type: [string, 'null'], maxLength: 1200}
                 reason:
+                  description: Обязательная непустая причина при действии reject.
                   type: string
                   maxLength: 1200
               required:
@@ -2824,6 +2943,7 @@ paths:
                     enum:
                     - resume
                     - clarification
+                    - interview
                   attachment:
                     anyOf:
                     - type: object
@@ -2979,7 +3099,7 @@ paths:
     get:
       tags:
       - Кандидаты
-      summary: Поиск профилей по ФИО и дополнительному образованию
+      summary: Поиск профилей и непривязанных откликов
       operationId: get_hr_candidates
       responses:
         '200':
@@ -2994,6 +3114,13 @@ paths:
                     items:
                       type: object
                       properties:
+                        kind: {type: string, enum: [candidate, application]}
+                        applicationId: {type: string}
+                        vacancyId: {type: string}
+                        vacancyTitle: {type: string}
+                        receivedAt: {type: string, format: date-time}
+                        sourceChannel: {type: string}
+                        additionalEducation: {type: string}
                         fullName:
                           type: string
                           maxLength: 160
@@ -3046,6 +3173,15 @@ paths:
         schema:
           type: string
           maxLength: 160
+      - name: skills
+        in: query
+        schema: {type: string, maxLength: 120}
+      - name: education
+        in: query
+        schema: {type: string, maxLength: 160}
+      - name: profilesOnly
+        in: query
+        schema: {type: string, enum: ['1']}
       - name: additionalEducation
         in: query
         schema: {type: string, maxLength: 160}
@@ -3160,6 +3296,7 @@ paths:
                         type: string
                         enum:
                         - hr
+                        - department
                         - resume
                       actorName:
                         type: string
@@ -3169,6 +3306,11 @@ paths:
                       applicationId:
                         type: string
                         maxLength: 140
+                  archiveDocuments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArchiveDocument'
+                  archiveNextCursor: {type: [string, 'null']}
                   applicationIds:
                     type: array
                     items:
@@ -3254,6 +3396,12 @@ paths:
           minimum: 1
           maximum: 50
           default: 24
+      - name: summary
+        in: query
+        schema: {type: string, enum: ['1']}
+      - name: archiveCursor
+        in: query
+        schema: {type: string}
       - name: cursor
         in: query
         schema:
@@ -3275,6 +3423,9 @@ paths:
                   interviewId:
                     type: string
                     maxLength: 140
+                  format: {type: [string, 'null'], enum: [phone, onsite, null]}
+                  result: {type: [string, 'null'], enum: [proceed, clarify, decline, null]}
+                  notes: {type: string}
                   completedAt:
                     anyOf:
                     - type: string
@@ -3322,6 +3473,7 @@ paths:
                     enum:
                     - interview_feedback
                     - exit_feedback
+                    - voluntary_exit
                   status:
                     type: string
                     enum:
@@ -3578,6 +3730,7 @@ paths:
                           enum:
                           - interview_feedback
                           - exit_feedback
+                          - voluntary_exit
                         status:
                           type: string
                           enum:
@@ -3636,6 +3789,7 @@ paths:
           enum:
           - interview_feedback
           - exit_feedback
+          - voluntary_exit
   /hr/survey-invitations/{id}:
     get:
       tags:
@@ -3658,6 +3812,7 @@ paths:
                     enum:
                     - interview_feedback
                     - exit_feedback
+                    - voluntary_exit
                   status:
                     type: string
                     enum:
@@ -3763,6 +3918,7 @@ paths:
                     enum:
                     - interview_feedback
                     - exit_feedback
+                    - voluntary_exit
                   status:
                     type: string
                     enum:
@@ -3931,12 +4087,20 @@ paths:
                           enum:
                           - interview_feedback
                           - exit_feedback
+                          - voluntary_exit
                         sent:
                           type: integer
                           minimum: 0
                         answered:
                           type: integer
                           minimum: 0
+                        reasons:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              category: {type: string}
+                              total: {type: integer, minimum: 0}
                         averages:
                           type: object
                           properties:
@@ -3984,6 +4148,568 @@ paths:
         schema:
           type: string
           format: date
+      - name: separateSurveys
+        in: query
+        schema: {type: string, enum: ['1']}
+      - name: surveyFrom
+        in: query
+        schema: {type: string, format: date}
+      - name: surveyTo
+        in: query
+        schema: {type: string, format: date}
+  /hr/email-imports:
+    post:
+      summary: Принять отклик из письма EML
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [vacancyId, sourceAccount, emailFile]
+              properties:
+                vacancyId: {type: string}
+                sourceAccount: {type: string, maxLength: 160}
+                emailFile: {type: string, format: binary}
+                fullName: {type: string, maxLength: 160}
+                contact: {type: string, format: email}
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        '200':
+          description: Письмо с таким Message-ID уже зарегистрировано.
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/archive-documents/{id}:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Скачать вложение исторического документа
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Исходный файл
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404':
+          description: Вложение отсутствует
+  /hr/archive-documents:
+    post:
+      summary: Сохранить исторический документ вне воронки
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/ArchiveDocument'
+              - type: object
+                required: [candidateId, sourceAccount, title, text]
+                properties:
+                  candidateId: {type: string}
+                  confirmDuplicate: {type: boolean}
+          multipart/form-data:
+            schema:
+              type: object
+              required: [candidateId, sourceAccount, title]
+              properties:
+                candidateId: {type: string}
+                sourceAccount: {type: string, maxLength: 160}
+                title: {type: string, maxLength: 180}
+                text: {type: string, maxLength: 20000}
+                resumeFile: {type: string, format: binary}
+                deliveryId: {type: string, maxLength: 250}
+                events: {type: string, description: JSON-массив событий}
+                confirmDuplicate: {type: string, enum: ['on']}
+              anyOf:
+              - required: [text]
+              - required: [resumeFile]
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        '200':
+          description: Документ уже присутствует в истории.
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/applications/{id}/report:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Справка с образовательными фактами, цитатами и решением
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applicationId, vacancyTitle, fullName, facts, criteria, stage]
+                properties:
+                  applicationId: {type: string}
+                  vacancyTitle: {type: string}
+                  fullName: {type: string}
+                  assessmentStatus: {type: string}
+                  facts:
+                    type: object
+                    properties:
+                      education: {type: array, items: {type: object}}
+                      retraining: {type: array, items: {type: object}}
+                      refresher: {type: array, items: {type: object}}
+                  criteria: {type: array, items: {type: object}}
+                  stage: {type: object}
+                  decision: {type: [object, 'null']}
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/applications/{id}/related-reviews:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: История разбора по смежным вакансиям
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: {type: array, items: {type: object}}
+                  nextCursor: {type: [string, 'null']}
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      summary: Отдельный разбор по смежной вакансии
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vacancyId]
+              properties:
+                vacancyId: {type: string}
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/applications/{id}/interviews:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Интервью по отклику
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: {type: array, items: {type: object}}
+                  nextCursor: {type: [string, 'null']}
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/applications/{id}/handoff:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Переданная карточка и ответ подразделения
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: [object, 'null']
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      summary: Передать карточку ответственному
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assigneeId, dueAt]
+              properties:
+                previewDigest: {type: string}
+                assigneeId: {type: string, maxLength: 160}
+                dueAt: {type: string, format: date-time}
+                note: {type: string, maxLength: 1200}
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /department/handoffs:
+    get:
+      summary: Входящие карточки представителя подразделения
+      security:
+      - staffCookie: []
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: {type: array, items: {type: object}}
+                  nextCursor: {type: [string, 'null']}
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /department/handoffs/{id}/response:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Сохранить решение подразделения
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, note]
+              properties:
+                outcome: {type: string, enum: [proceed, clarify, decline]}
+                note: {type: string, maxLength: 1200}
+      responses:
+        '201':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/vacancies/{id}/submit:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Передать текущий черновик
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draftNumber]
+              properties:
+                draftNumber: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/vacancies/{id}/approve:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Согласовать версию
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draftNumber]
+              properties:
+                draftNumber: {type: integer, minimum: 1}
+                note: {type: string, maxLength: 1200}
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/vacancies/{id}/request_changes:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Вернуть версию на доработку
+      security:
+      - staffCookie: []
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draftNumber, note]
+              properties:
+                draftNumber: {type: integer, minimum: 1}
+                note: {type: string, maxLength: 1200}
+      responses:
+        '200':
+          description: Успешный результат
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: Ошибка запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hr/applications/{id}/interview-notes:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Записать ответ со слов кандидата и следующий шаг
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question, text]
+              properties:
+                criterionId: {type: [string, 'null']}
+                question: {type: string, maxLength: 300}
+                text: {type: string, maxLength: 2000}
+                nextStep: {type: string, maxLength: 1200}
+      responses:
+        '201':
+          description: Ответ сохранён отдельным источником
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sourceId: {type: string}
+                  recordedAt: {type: string, format: date-time}
+  /hr/applications/{id}/handoff-preview:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Посмотреть, какие сведения увидит подразделение
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Предварительный просмотр карточки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffBrief'
+  /department/requisitions:
+    get:
+      summary: Заявки своего подразделения
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Список доступных заявок
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequisitionPage'
+    post:
+      summary: Сохранить черновик заявки на подбор
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequisitionFields'
+      responses:
+        '201':
+          description: Черновик сохранён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requisition'
+  /department/requisitions/{id}:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Открыть свою заявку подразделения
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Заявка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requisition'
+    put:
+      summary: Изменить черновик своей заявки
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequisitionFields'
+      responses:
+        '200':
+          description: Черновик обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requisition'
+  /department/requisitions/{id}/submit:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    post:
+      summary: Подтвердить заявку и передать кадровику
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      responses:
+        '200':
+          description: Заявка передана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requisition'
+  /hr/requisitions:
+    get:
+      summary: Получить подтверждённые заявки на создание вакансий
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Заявки, по которым ещё нет черновика вакансии
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequisitionPage'
+  /hr/requisitions/{id}:
+    parameters:
+    - $ref: '#/components/parameters/RecordId'
+    get:
+      summary: Получить подтверждённую заявку
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Заявка для подготовки вакансии
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requisition'
 components:
   securitySchemes:
     staffCookie:
@@ -3996,7 +4722,119 @@ components:
       in: cookie
       name: kadry_guest
       description: Гостевая сессия с доступом к своему подтверждению и чату.
+  parameters:
+    StaffIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 8, maxLength: 128, pattern: '^[a-zA-Z0-9._-]+$'}
+    RecordId:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, maxLength: 140}
   schemas:
+    RequisitionFields:
+      type: object
+      required: [title, description]
+      properties:
+        title: {type: string, maxLength: 150}
+        department: {type: string, maxLength: 140}
+        description: {type: string, maxLength: 12000}
+    Requisition:
+      allOf:
+      - $ref: '#/components/schemas/RequisitionFields'
+      - type: object
+        properties:
+          id: {type: string}
+          status: {type: string, enum: [draft, submitted, vacancy_draft, published]}
+          vacancyId: {type: string}
+          vacancySlug: {type: string}
+    RequisitionPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Requisition'}}
+        nextCursor: {type: [string, 'null']}
+    HandoffBrief:
+      type: object
+      required: [fullName, vacancyTitle, criteria]
+      properties:
+        fullName: {type: string}
+        vacancyTitle: {type: string}
+        criteria:
+          type: array
+          items:
+            type: object
+            properties:
+              label: {type: string}
+              reference: {type: string}
+              status: {type: string, enum: [matched, partial, needs_clarification, not_met]}
+              question: {type: [string, 'null']}
+              reviewReason: {type: [string, 'null']}
+    InterviewNote:
+      type: object
+      properties:
+        sourceId: {type: string}
+        criterionId: {type: [string, 'null']}
+        question: {type: string}
+        text: {type: string}
+        nextStep: {type: string}
+        actorName: {type: string}
+        recordedAt: {type: string, format: date-time}
+    InterviewPlanQuestion:
+      type: object
+      required: [criterionId, label, question, reason]
+      properties:
+        criterionId: {type: string}
+        label: {type: string}
+        question: {type: string}
+        reason: {type: string, enum: [required_gap, optional_gap, verify_evidence, opening]}
+        evidence:
+          anyOf:
+          - $ref: '#/components/schemas/InterviewEvidence'
+          - type: 'null'
+        source: {type: string, enum: [local, model]}
+    InterviewEvidence:
+      type: object
+      required: [sourceId, type, quote, offset]
+      properties:
+        sourceId: {type: string}
+        type: {type: string, enum: [resume, test, clarification, interview]}
+        quote: {type: string}
+        offset: {type: integer, minimum: 0}
+    ReviewProgress:
+      type: object
+      required: [required, withEvidence, confirmed]
+      properties:
+        required: {type: integer, minimum: 0}
+        withEvidence: {type: integer, minimum: 0}
+        confirmed: {type: integer, minimum: 0}
+    ArchiveDocument:
+      type: object
+      properties:
+        documentId: {type: string}
+        title: {type: string, maxLength: 180}
+        text: {type: string, maxLength: 20000}
+        sourceAccount: {type: string, maxLength: 160}
+        deliveryId: {type: [string, 'null'], maxLength: 250}
+        addedAt: {type: string, format: date-time}
+        addedBy: {type: string}
+        attachment: {type: [object, 'null']}
+        education: {type: string}
+        additionalEducation: {type: string}
+        events:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [position, note]
+            properties:
+              position: {type: string, maxLength: 150}
+              type: {type: string, enum: [application, interview, decision, other]}
+              outcome: {type: string, enum: [hired, rejected, withdrawn, pending]}
+              excerpt: {type: string, maxLength: 500}
+              date: {type: [string, 'null']}
+              note: {type: string, maxLength: 1200}
     IntakeTriageStatus:
       type: string
       enum: [review_first, clarify, check_source, confirmed_gap, manual_review, processing, closed]

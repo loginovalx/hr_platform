@@ -5,6 +5,7 @@ function triageQuery(conditions) {
     SELECT * FROM records WHERE kind='application'${conditions.length ? " AND " + conditions.join(" AND ") : ""}
   ), evidence AS MATERIALIZED (
     SELECT a.*, assessment.id AS assessmentId, source.id AS resumeId,
+      CASE WHEN handoff.id IS NULL THEN NULL WHEN json_extract(handoff.data,'$.response') IS NULL THEN 'waiting' ELSE 'answered' END AS handoffStatus,
       json_extract(source.data,'$.attachment') IS NOT NULL AS hasAttachment,
       coalesce(json_extract(source.data,'$.readable'),length(trim(coalesce(json_extract(source.data,'$.text'),'')))>0,0) AS hasText,
       coalesce(nullif(json_extract(a.data,'$.contact'),''), nullif(json_extract(person.data,'$.contact'),'')) IS NOT NULL AS hasContact,
@@ -22,7 +23,7 @@ function triageQuery(conditions) {
           AND hasEvidence THEN 1 ELSE 0 END),0)
       ) FROM (
         SELECT json_extract(c.value,'$.hrOverride.status') AS overrideStatus,
-          json_extract(c.value,'$.status') AS modelStatus,
+          CASE WHEN json_extract(assessment.data,'$.scoringVersion')=${currentScoringVersion} THEN json_extract(c.value,'$.status') ELSE 'partial' END AS modelStatus,
           coalesce(json_array_length(json_extract(c.value,'$.evidence')),0)>0 AS hasEvidence
         FROM json_each(assessment.data,'$.items') c WHERE json_extract(c.value,'$.required')=1
       )) AS progress
@@ -30,6 +31,7 @@ function triageQuery(conditions) {
     LEFT JOIN records assessment ON assessment.kind='assessment' AND assessment.id=a.id
     LEFT JOIN records source ON source.kind='source' AND source.id=json_extract(a.data,'$.sourceId')
     LEFT JOIN records person ON person.kind='candidate' AND person.id=json_extract(a.data,'$.candidateId')
+    LEFT JOIN records handoff ON handoff.kind='handoff' AND handoff.id=a.id
   ), reasons AS (
     SELECT *, json_extract(progress,'$.confirmed')*9+json_extract(progress,'$.priorityEvidence') AS priority,
       CASE
@@ -67,6 +69,7 @@ function queueItem(row) {
   const progress = JSON.parse(row.progress);
   return {
     ...applicationSummary(decodeRow(row)),
+    handoffStatus:row.handoffStatus,
     reviewProgress: progress.required ? {
       required: progress.required, confirmed: progress.confirmed, withEvidence: progress.withEvidence
     } : null,
@@ -77,7 +80,14 @@ function queueItem(row) {
 async function applicationQueue(ctx, conditions, params, usePriority) {
   const selected = ctx.url.searchParams.get("triage") || "";
   if (selected && !triageStatuses.has(selected)) invalid("triage", "invalid_triage", "Выберите статус разбора.");
+  const handoff = ctx.url.searchParams.get("handoff") || "";
+  if (handoff && !["waiting","answered"].includes(handoff)) invalid("handoff","invalid_handoff","Выберите состояние передачи.");
+  if (handoff) {
+    const condition = handoff === "waiting" ? "IS NULL" : "IS NOT NULL";
+    conditions = [...conditions,`EXISTS (SELECT 1 FROM records h WHERE h.kind='handoff' AND h.id=records.id AND json_extract(h.data,'$.response') ${condition})`];
+  }
   const { limit, after } = pageOptions(ctx.url);
+  await refreshQueueAssessments(ctx,conditions,params);
   const filters = selected ? ["triageStatus=?"] : [];
   const values = selected ? [selected] : [];
   if (after && usePriority) {

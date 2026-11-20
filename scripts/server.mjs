@@ -39,8 +39,10 @@ export async function localRuntime(options = {}) {
   const env = {
     LOCAL_RUNTIME: true,
     DEMO_MODE: options.demo === true || process.env.DEMO_MODE === "1",
+    SYNTHETIC_ONLY: options.syntheticOnly === true || process.env.SYNTHETIC_ONLY === "1",
     ADMIN_PASSWORD: options.adminPassword ?? process.env.ADMIN_PASSWORD,
     HR_PASSWORD: options.hrPassword ?? process.env.HR_PASSWORD,
+    DEPARTMENT_PASSWORD: options.departmentPassword ?? process.env.DEPARTMENT_PASSWORD,
     SEED_DEMO: options.seed ?? process.env.SEED_DEMO,
     YANDEX_FOLDER_ID: options.yandex?.folderId ?? process.env.YANDEX_FOLDER_ID,
     YANDEX_API_KEY: options.yandex?.apiKey ?? process.env.YANDEX_API_KEY,

@@ -53,11 +53,11 @@ const submit = (label, icon = "", name = "") => `<button type="submit" class="bt
 const avatar = (name = "", index = 0) => `<span class="letter-avatar avatar-${index % 5}" aria-hidden="true">${esc(name.trim().split(/\s+/u).slice(0,2).map(x => Array.from(x)[0] || "").join("").toUpperCase().slice(0,4) || "HR")}</span>`;
 const brand = (url = "/hr") => `<a class="brand" href="${url}" data-link><img src="/mark.svg" width="37" height="37" alt=""><span class="brand-text">Кадры<span aria-hidden="true"> · </span>Горький<span class="brand-sub">Муниципальный подбор</span></span></a>`;
 const stages = { received:["Получен","purple"],review:["Рассмотрение","blue"],interview:["Интервью","amber"],decision:["Решение","purple"],hired:["Принят на работу","green"],rejected:["Отказ","red"] };
-const statusNames = { matched:["Подтверждено","green"],partial:["Частично","amber"],needs_clarification:["Уточнить","purple"],not_met:["Не соответствует","red"] };
+const statusNames = { matched:["Есть сведения","green"],partial:["Частично","amber"],needs_clarification:["Уточнить","purple"],not_met:["Не соответствует","red"] };
 const sourceNames = { public_form:"Гостевая форма", email:"Электронная почта", archive:"Архив", manual:"Ручное добавление", unknown:"Источник неизвестен" };
-const actions = { receive:"Отклик получен", start_review:"Начать рассмотрение", invite_interview:"Пригласить на интервью", complete_interview:"Отметить интервью состоявшимся",move_to_decision:"Перевести на этап решения",hire:"Принять на работу",reject:"Зафиксировать отказ" };
+const actions = { schedule_followup:"Назначить следующее интервью", receive:"Отклик получен", start_review:"Начать рассмотрение", invite_interview:"Пригласить на интервью", complete_interview:"Отметить интервью состоявшимся",move_to_decision:"Перевести на этап решения",hire:"Принять на работу",reject:"Зафиксировать отказ" };
 const invitationLabels = { prepared:["Подготовлена","purple"],sent:["Отправлена","blue"],answered:["Есть ответ","green"],no_contact:["Нет контакта","amber"],expired:["Срок истёк","red"] };
-const typeLabels = { interview_feedback:"После интервью",exit_feedback:"После увольнения" };
+const typeLabels = { interview_feedback:"После интервью",exit_feedback:"По инициативе работодателя",voluntary_exit:"Причины добровольного ухода" };
 const known = x => x ? esc(x) : '<span class="muted">Не указано</span>';
 const stagePill = (a, dot = true) => chip(...(stages[a.outcome || a.stage || a.currentStage] || stages.received), dot);
 const pagePath = (href, q = {}, keep = false) => {
@@ -67,6 +67,24 @@ const pagePath = (href, q = {}, keep = false) => {
   return url.pathname + url.search;
 };
 const getJSON = path => api(path);
+const queueScroll = new Map();
+const listPaths = new Set(["/hr/applications","/hr/candidates"]);
+const returnPath = path => listPaths.has(path) || /^\/hr\/candidates\/[\w-]{1,140}$/.test(path);
+function returnLocation(fallback) {
+  const value = new URLSearchParams(location.search).get("back");
+  if (!value?.startsWith("/hr/")) return fallback;
+  try {
+    const url = new URL(value, location.origin);
+    if (url.origin === location.origin && returnPath(url.pathname)) return url.pathname + url.search;
+  } catch {}
+  return fallback;
+}
+function listDetail(path) {
+  return returnPath(location.pathname) ? pagePath(path, {back:location.pathname + location.search}) : path;
+}
+function listSettings(key, defaultValue) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? defaultValue; } catch { return defaultValue; }
+}
 let navRun = 0;
 let actor = null;
 let demoAvailable = false;
@@ -116,7 +134,8 @@ function toast(message, error = false) {
   setTimeout(() => div.remove(), 4000);
 }
 function choose(name, values, current, attrs = "") {
-  return `<span class="select-wrap"><select name="${esc(name)}" ${attrs}>${values.map(([value,label]) => `<option value="${esc(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>${ic("down")}</span>`;
+  const label = values.find(([value])=>String(value)===String(current??""))?.[1] || values[0]?.[1] || "";
+  return `<span class="select-wrap"><select name="${esc(name)}" ${attrs}>${values.map(([value,text]) => `<option value="${esc(value)}" ${String(value) === String(current ?? "") ? "selected" : ""}>${esc(text)}</option>`).join("")}</select><span class="select-display" aria-hidden="true"><span>${esc(label)}</span>${ic("down")}</span></span>`;
 }
 function input(name, label, options = {}) {
   const id = options.id || `field_${name.replace(/[^\w-]/g,"_")}`;
@@ -177,17 +196,19 @@ function hrShell(content) {
 }
 function publicShell(content) {
   const secondary = location.pathname === "/vacancies" ? "" : link("/vacancies","Все вакансии","quiet");
-  return `<div class="public-shell"><header class="public-header"><div class="public-header-inner">${brand("/vacancies")}<nav aria-label="Основная навигация" class="row wrap">${secondary}${link("/hr","Кабинет HR","secondary","lock")}</nav></div></header>
+  const staff = actor?.role==="department" || location.pathname==="/department"
+    ? link("/department","Кабинет подразделения","secondary","lock") : link("/hr","Кабинет HR","secondary","lock");
+  return `<div class="public-shell"><header class="public-header"><div class="public-header-inner">${brand("/vacancies")}<nav aria-label="Основная навигация" class="row wrap">${secondary}${staff}</nav></div></header>
   <main class="public-main" id="main">${content}</main><footer class="public-footer"><div>Кадры · Горький <span aria-hidden="true">·</span> Нижний Новгород</div></footer></div>`;
 }
-function loginView() {
+function loginView(department=false) {
   return publicShell(`<div class="public-narrow card pad stack-lg" style="max-width:420px;margin-block:22px">
-    ${heading("Кабинет HR","Войдите, чтобы работать с откликами и вакансиями.")}
+    ${heading(department?"Кабинет подразделения":"Кабинет HR",department?"Войдите, чтобы ответить кадровику.":"Войдите, чтобы работать с откликами и вакансиями.")}
     <form class="stack" data-form="login">${errors}
       ${input("user","Логин",{required:true,max:80,attrs:'autocomplete="username"'})}
       ${input("password","Пароль",{type:"password",required:true,max:256,attrs:'autocomplete="current-password"'})}
       ${submit("Войти","lock")}
-    </form>${demoAvailable ? btn("Открыть демо-кабинет",'data-action="demo-login"',"secondary","grid") : ""}
+    </form>${demoAvailable ? `<div class="row wrap">${department ? btn("Демо подразделения",'data-action="demo-login" data-user="department"',"secondary") : btn("Открыть демо-кабинет",'data-action="demo-login"',"secondary")+btn("Демо кадровика",'data-action="demo-login" data-user="demo-hr"',"secondary")}</div>` : ""}
   </div>`);
 }
 function metric(label, value, icon, color) {
@@ -224,7 +245,7 @@ function funnelChart(rows, total) {
   <div class="funnel-track" role="meter" aria-label="${esc(stages[x.stage][0])}" aria-valuemin="0" aria-valuemax="${Math.max(1,total)}" aria-valuenow="${x.reached}"><span style="--progress:${total ? x.reached / total * 100 : 0}%"></span></div></div>`).join("")}</div>`;
 }
 const intakeStatuses = {
-  review_first: ["Рассмотреть в первую очередь", "green"],
+  review_first: ["В приоритете", "green"],
   clarify: ["Нужно уточнение", "amber"],
   check_source: ["Проверить данные", "amber"],
   confirmed_gap: ["Расхождение подтверждено HR", "purple"],
@@ -250,24 +271,24 @@ function intakeStatus(triage) {
   const status = intakeStatuses[triage?.status];
   return status ? chip(status[0],status[1],true) : "";
 }
-function applicationTable(items, compact = false) {
+function applicationTable(items, compact = false, filtered = false) {
   const headers = compact
     ? [["Кандидат",29],["Вакансия",31],["Этап",23],["Получен",17]]
     : [["Кандидат",25],["Вакансия",25],["Этап",18],["Источник",17],["Получен",15]];
   const rows = items.map((x,i) => {
-    const url = `/hr/applications/${enc(x.applicationId)}`;
-    const person = `<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link class="table-name" href="${url}">${esc(x.fullName)}</a>${!compact && x.contact ? `<span class="table-meta">${esc(x.contact)}</span>` : ""}</div></div>`;
+    const url = listDetail(`/hr/applications/${enc(x.applicationId)}`);
+    const person = `<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link class="table-name" href="${esc(url)}">${esc(x.fullName)}</a></div></div>`;
     const progress = !compact && x.reviewProgress;
-    const stage = stagePill(x) + (!compact && x.triage ? `<div class="table-meta">${intakeStatus(x.triage)}<small class="table-meta">${esc(intakeReasons[x.triage.reason])}</small></div>` : "")
-      + (progress ? `<small class="table-meta">Цитаты ${progress.withEvidence}/${progress.required} · Подтверждено HR ${progress.confirmed}/${progress.required}</small>` : "");
+    const stage = stagePill(x) + (!compact && x.triage ? `<details class="queue-status"><summary>${intakeStatus(x.triage)}${progress ? ` <span class="tiny muted">${progress.withEvidence}/${progress.required}</span>` : ""}</summary><p class="tiny">${esc(intakeReasons[x.triage.reason])}${progress ? ` · Подтверждено HR ${progress.confirmed}/${progress.required}` : ""}</p></details>` : "")
+      + (!compact && x.handoffStatus ? `<div class="table-meta">${chip(x.handoffStatus==="answered"?"Есть ответ подразделения":"Ожидаем подразделение",x.handoffStatus==="answered"?"blue":"amber")}</div>`:"");
     return { href:url,cells:[person,esc(x.vacancyTitle),stage,...(!compact ? [`<span class="muted">${esc(sourceNames[x.sourceChannel])}</span>`] : []),`<span class="muted">${esc(date(x.receivedAt))}</span>`] };
   });
-  return items.length ? table(headers,rows) : empty("Откликов пока нет","Когда соискатель заполнит форму, отклик появится здесь.");
+  return items.length ? table(headers,rows,{tight:!compact}) : filtered ? empty("По этим условиям ничего не найдено","","search",link("/hr/applications","Сбросить фильтры","secondary")) : empty("Откликов пока нет","Когда соискатель заполнит форму, отклик появится здесь.");
 }
 async function overview() {
   const [a,r] = await Promise.all([getJSON("/hr/analytics"),getJSON("/hr/applications?limit=5")]);
   return `<section class="hero"><div class="hero-body"><div class="hero-kicker">${ic("building")} Нижний Новгород</div><h1 tabindex="-1">Кабинет подбора</h1><p>Публикуйте вакансии, разбирайте отклики и следите за ходом найма.</p><div class="hero-actions">
-    ${link("/hr/vacancies/new","Создать вакансию","primary","plus")}${link("/hr/applications","Открыть отклики","secondary","inbox")}
+    ${actor.scoped?"":link("/hr/vacancies/new","Создать вакансию","primary","plus")}${link("/hr/applications","Открыть отклики",actor.scoped?"primary":"secondary","inbox")}
   </div></div>${city()}</section>
   <section class="stack" aria-labelledby="overview-label"><div class="overview-head"><h2 id="overview-label">Подбор в цифрах</h2>${link("/hr/analytics","Открыть аналитику","quiet btn-sm","bars")}</div>${metrics(a.totals)}</section>
   <div class="dashboard-grid"><section class="card pad">${cardHead("Динамика откликов","За последние 7 дней",chip("7 дней"))}${spark(a.series)}</section>
@@ -275,7 +296,20 @@ async function overview() {
   <section class="card"><div class="table-title"><h2>Последние отклики</h2>${link("/hr/applications","Все отклики","quiet btn-sm")}</div>${applicationTable(r.items,true)}</section>`;
 }
 const vacancyChoices = (vacancies, all = true) => [[ "", all ? "Все вакансии" : "Выберите вакансию" ], ...vacancies.map(v=>[v.vacancyId, v.title])];
+const requisitionStatuses={draft:"Черновик",submitted:"У кадровика",vacancy_draft:"Вакансия готовится",published:"Вакансия опубликована"};
+function vacancyTabs(requests) {
+  if(actor.scoped)return "";
+  return `<nav class="tabs" aria-label="Работа с вакансиями"><a data-link href="/hr/vacancies" ${!requests?'aria-current="page"':""}>Вакансии</a>
+    <a data-link href="/hr/vacancies?view=requests" ${requests?'aria-current="page"':""}>Заявки подразделений</a></nav>`;
+}
 async function listVacancies() {
+  if(!actor.scoped&&new URLSearchParams(location.search).get("view")==="requests"){
+    const requests=await getJSON("/hr/requisitions"+location.search);
+    return `${heading("Заявки подразделений")}${vacancyTabs(true)}
+      ${requests.items.map(item=>`<section class="card pad stack-sm">${cardHead(item.title,item.department)}
+      <p class="pre">${esc(item.description)}</p><div>${link(pagePath("/hr/vacancies/new",{request:item.id}),"Подготовить вакансию","primary","brief")}</div>
+      </section>`).join("")||`<section class="card">${empty("Подтверждённых заявок пока нет","","brief")}</section>`}${pagination(requests.nextCursor)}`;
+  }
   const r=await getJSON("/hr/vacancies"+location.search);
   const list=r.items.map(v=>`<article class="card vac-card"><div class="row between align-start">${tile("brief")}${v.status==="published"?chip("Опубликована","green",true):chip("Черновик","",true)}</div>
   <div><h2><a data-link href="/hr/vacancies/${enc(v.vacancyId)}">${esc(v.title)}</a></h2><p class="vac-meta">${esc(v.department)}</p></div>
@@ -283,8 +317,8 @@ async function listVacancies() {
   ${link("/hr/vacancies/"+enc(v.vacancyId),"Редактировать","secondary btn-sm","edit")}
   ${link(pagePath("/hr/applications",{vacancyId:v.vacancyId}),"Отклики","quiet btn-sm","inbox")}
   </div></article>`).join("");
-  return `${heading("Вакансии","Черновики, опубликованные вакансии и тесты для соискателей.",link("/hr/vacancies/new","Создать вакансию","primary","plus"))}
-  ${list ? `<div class="list-grid">${list}</div>` : `<div class="card">${empty("Вакансий пока нет","Создайте первую вакансию и опубликуйте форму отклика.","brief")}</div>`}${pagination(r.nextCursor)}`;
+  return `${heading("Вакансии","Черновики, опубликованные вакансии и тесты для соискателей.",actor.scoped?"":link("/hr/vacancies/new","Создать вакансию","primary","plus"))}
+  ${vacancyTabs(false)}${list ? `<div class="list-grid">${list}</div>` : `<div class="card">${actor.scoped?empty("Вам пока не назначены вакансии","","brief"):empty("Вакансий пока нет","Создайте первую вакансию и опубликуйте форму отклика.","brief")}</div>`}${pagination(r.nextCursor)}`;
 }
 async function vacancyMenu(current = "", publishedOnly = false) {
   const found=await getJSON("/hr/vacancies?limit=50");
@@ -335,13 +369,20 @@ function captureVacancyParts(form) {
 }
 async function editVacancyPage(id) {
   const existing=id&&id!=="new"?await getJSON("/hr/vacancies/"+enc(id)):null;
-  const v=existing?.draft||{title:"",slug:"",department:"",description:"",location:"Нижний Новгород",schedule:"Полная занятость",criteria:[],testQuestions:[],formFields:[{id:"resume",required:true}]};
+  const requestId=!existing&&!actor.scoped?new URLSearchParams(location.search).get("request"):null;
+  const request=requestId?await getJSON("/hr/requisitions/"+enc(requestId)):null;
+  if(request&&request.status!=="submitted")return heading("По заявке уже есть вакансия","",link("/hr/vacancies/"+enc(request.vacancyId),"Открыть вакансию","primary"));
+  const v=existing?.draft||{title:request?.title||"",slug:request?convertSlug(request.title):"",department:request?.department||"",description:request?.description||"",location:"Нижний Новгород",schedule:"Полная занятость",criteria:[],testQuestions:[],formFields:[{id:"resume",required:true}]};
   vacancyParts={criteria:v.criteria,testQuestions:v.testQuestions};
   const publicLink=existing?.publishedVersionId?link("/vacancies/"+enc(existing.slug),"Открыть вакансию","secondary","globe"):"";
   const actionsHtml=existing?publicLink+link(pagePath("/hr/applications",{vacancyId:id}),"Отклики","secondary","inbox"):"";
+  if(actor.scoped&&!existing) return heading("Новая вакансия","Создание вакансий доступно руководителю.");
+  const approval=existing?.approval;
+  const canReview=approval?.status==="submitted"&&actor.role==="admin"&&![existing.draftAuthor?.id,approval.submittedBy?.id].includes(actor.id);
+  const approvalLabels={submitted:"На согласовании",approved:"Согласована",changes_requested:"Возвращена на доработку"};
   return `<div class="row wrap">${link("/hr/vacancies","Вакансии","quiet btn-sm","brief")}${existing?.publishedVersionId?chip("Опубликована","green",true):chip("Черновик")}</div>
   ${heading(existing ? existing.title : "Новая вакансия",existing?"Изменения на витрине появятся после публикации новой версии.":"Подготовьте описание, критерии проверки и тест.",actionsHtml)}
-  <form data-form="vacancy" data-id="${esc(existing?.vacancyId||"")}" class="stack-lg">
+  <form data-form="vacancy" data-id="${esc(existing?.vacancyId||"")}" data-requisition="${esc(request?.id||"")}" class="stack-lg">
     <section class="card pad stack">${cardHead("Основная информация")}
       ${pair(input("title","Название вакансии",{value:v.title,placeholder:"Аналитик данных",required:true,max:150}),input("department","Подразделение",{value:v.department,required:true,max:140}))}
       ${pair(input("location","Город",{value:v.location,max:120}),input("schedule","Занятость",{value:v.schedule,max:80}))}
@@ -360,8 +401,13 @@ async function editVacancyPage(id) {
       ${cardHead("Тест при отклике","Текстовые вопросы видны в гостевой форме.",btn("Добавить вопрос",'data-action="add-part" data-kind="testQuestions"',"secondary btn-sm","plus"))}
       <div class="stack-sm" data-parts="testQuestions">${v.testQuestions.map((item,i)=>vacancyEditorPart("testQuestions",item,i)).join("")}</div>
     </section>
-    ${errors}<div class="row wrap"><button type="submit" class="btn btn-secondary" name="mode" value="draft">Сохранить черновик</button>${submit("Опубликовать","check","publish")}</div>
-  </form>`;
+    ${errors}<div class="row wrap"><button type="submit" class="btn btn-secondary" name="mode" value="draft">Сохранить черновик</button>${!existing?.publishedVersionId?submit("Опубликовать","check","publish"):""}</div>
+  </form>${existing?.publishedVersionId?`<section class="card pad stack-sm" data-draft-number="${existing.draftNumber}"><h2>Согласование версии № ${existing.draftNumber}</h2>
+  ${existing.draftAuthor?`<p>Автор - ${esc(existing.draftAuthor.name)}</p>`:""}
+  ${approval?`<p>${esc(approvalLabels[approval.status])}${approval.reviewedBy?" · "+esc(approval.reviewedBy.name):""} ${esc(approval.note)}</p>`:""}
+  <div class="row wrap">${existing.draftAuthor&&(!approval||approval.status==="changes_requested")?btn("Передать на согласование",'data-action="vacancy-approval" data-mode="submit"'):""}
+  ${canReview?btn("Согласовать",'data-action="vacancy-approval" data-mode="approve"',"primary")+btn("Вернуть на доработку",'data-action="vacancy-approval" data-mode="request_changes"'):""}
+  ${approval?.status==="approved"?btn("Опубликовать версию",'data-action="vacancy-approval" data-mode="publish"',"primary"):""}</div></section>`:""}`;
 }
 async function applicationList() {
   const q=new URLSearchParams(location.search);
@@ -369,17 +415,20 @@ async function applicationList() {
   const totals=r.triageTotals;
   const queues=[["",`Вся очередь (${Object.values(totals).reduce((a,b)=>a+b,0)})`],
     ...Object.entries(intakeStatuses).map(([key,[label]])=>[key,`${label} (${totals[key]||0})`])];
-  return `${heading("Отклики","Новые заявки, резюме и этапы подбора.",btn("Импорт архива",'data-action="import-archive"',"secondary","upload")+btn("Добавить отклик",'data-action="import-application"',"primary","plus"))}
-  <form class="card pad filters" data-form="app-filters">
-    ${searchField(q.get("q"),"Поиск по кандидату")}
+  return `${heading("Отклики","",btn("Импортировать",'data-action="intake-options"',"secondary","upload")+btn("Добавить отклик",'data-action="import-application"',"primary","plus"))}
+  <form class="card pad stack-sm queue-filters" data-form="app-filters">
+    <div class="queue-main">${searchField(q.get("q"),"Поиск по кандидату")}
     ${vacancySelect(menu,q.get("vacancyId"))}
+    ${selectField("triage","Очередь разбора",queues,q.get("triage"))}</div>
+    <details ${["stage","channel","priority","handoff"].some(key=>q.get(key)) ? "open" : ""}><summary>Дополнительные фильтры</summary><div class="queue-main">
     ${selectField("stage","Этап", [["","Все этапы"],...Object.entries(stages).map(([id,[text]])=>[id,text])],q.get("stage"))}
     ${selectField("channel","Источник",[["","Все источники"],...Object.entries(sourceNames)],q.get("channel"))}
-    ${selectField("triage","Очередь разбора",queues,q.get("triage"))}
-    ${check("priority","По приоритету проверки выбранной вакансии",q.get("priority")==="on")}
-    <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}</div>
+    ${selectField("handoff","Ответ подразделения",[["","Любое состояние"],["waiting","Ожидаем подразделение"],["answered","Есть ответ"]],q.get("handoff"))}
+    <div>${check("priority","По приоритету проверки",q.get("priority")==="on" && !!q.get("vacancyId"))}<small class="muted" data-priority-hint>Выберите вакансию для сортировки по приоритету.</small></div></div></details>
+    <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}
+      ${btn("Сохранить фильтры",'data-action="save-filters"',"quiet")}${listSettings("kadry-filters",null) ? btn("Мои фильтры",'data-action="restore-filters"',"quiet") : ""}</div>
   </form>
-  <section class="card">${applicationTable(r.items)}${pagination(r.nextCursor)}</section>`;
+  <section class="card">${applicationTable(r.items,false,["q","vacancyId","stage","channel","triage","handoff"].some(key=>q.get(key)))}${pagination(r.nextCursor)}</section>`;
 }
 function resumeFields(required) {
   return `<div class="form-block stack-sm"><h3>Резюме${required ? " *" : ""}</h3>
@@ -394,10 +443,11 @@ async function importModal(archive) {
     return;
   }
   if (archive) {
-    showDialog("Импорт архива",`<form data-form="import-archive" class="stack">${vacancySelect(menu,current,false)}
+    showDialog("Импорт поступивших откликов",`<form data-form="import-archive" class="stack">${vacancySelect(menu,current,false)}
+    ${selectField("sourceChannel","Источник",Object.entries(sourceNames).filter(([id])=>["email","manual","unknown"].includes(id)),"email")}${input("sourceAccount","Учётная запись источника",{max:160,optional:true,hint:"Нужна для строк со стабильным deliveryId."})}
     ${input("archive","Файл выгрузки",{type:"file",required:true,attrs:'accept=".json,application/json"',hint:"JSON, до 20 откликов и 120 КБ."})}
-    <a class="text-link small" href="/api/v1/hr/archive-example" download="archive-example.json">Скачать пример архива</a>
-    <p class="muted small">В строке укажите имя, текст резюме и, если известны, email и исходную дату поступления.</p>
+    <a class="text-link small" href="/api/v1/hr/archive-example" download="archive-example.json">Скачать пример выгрузки</a>
+    <p class="muted small">Старые документы и события добавляются из профиля кандидата.</p>
     ${errors}<div data-import-result></div><div>${submit("Импортировать","upload")}</div></form>`);
     return;
   }
@@ -418,8 +468,8 @@ function assessmentCards(assessment) {
   <div class="stack-sm">${assessment.items.map(x=>{
     const [status,color]=hrLabel(x.hrOverride?.status || x.status);
     const proof=x.evidence.map(e=>`<div class="stack-sm"><blockquote class="quote">${esc(e.quote)}</blockquote>
-      <div>${btn(e.type==="resume"?"Открыть резюме":e.type==="test"?"Открыть ответ теста":"Открыть ответ кандидата",`data-action="evidence" data-type="${esc(e.type)}" data-id="${esc(e.sourceId)}"`,"quiet btn-sm","file")}</div></div>`).join("");
-    return `<article class="criterion"><div class="row between wrap"><h3 class="grow">${esc(x.label)}</h3>${chip(status,color,true)}</div>
+      <div>${btn(e.type==="resume"?"Открыть резюме":e.type==="test"?"Открыть ответ теста":"Открыть ответ кандидата",`data-action="evidence" data-type="${esc(e.type)}" data-id="${esc(e.sourceId)}" data-offset="${esc(e.offset)}" data-length="${e.quote.length}"`,"quiet btn-sm","file")}</div></div>`).join("");
+    return `<article class="criterion"><div class="row between wrap"><h3 class="grow">${esc(x.label)}</h3>${chip(x.hrOverride?.status==="matched"?"Подтверждено HR":status,color,true)}</div>
       ${x.reference ? `<p class="small muted">${esc(x.reference)}</p>` : ""}
       ${proof || '<p class="small muted">Сведения в источниках не указаны.</p>'}
       ${x.question && !x.hrOverride ? `<p class="small"><strong>Уточнение.</strong> ${esc(x.question)}</p>` : ""}
@@ -427,10 +477,84 @@ function assessmentCards(assessment) {
       <div>${btn("Изменить вывод",`data-action="override" data-id="${esc(x.criterionId)}"`,"secondary btn-sm","edit")}</div></article>`;
   }).join("")}</div>`;
 }
-function sourceCard(a) {
+function evidenceText(text, target) {
+  if (!target || !text) return `<div class="resume" tabindex="0">${esc(text || "Текст не указан.")}</div>`;
+  const offset = Number(target.dataset.offset);
+  const length = Number(target.dataset.length);
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || offset + length > text.length) return evidenceText(text);
+  const start = Math.min(offset,Math.max(0,text.lastIndexOf("\n",Math.max(0,offset-320)) + 1,offset-600));
+  const next = text.indexOf("\n",offset+length+320);
+  const end = Math.min(text.length,next<0?text.length:next,offset+length+600);
+  return `<div class="resume" tabindex="0">${start ? "…\n" : ""}${esc(text.slice(start,offset))}<mark data-evidence-mark>${esc(text.slice(offset,offset+length))}</mark>${esc(text.slice(offset+length,end))}${end<text.length ? "\n…" : ""}</div>`;
+}
+function sourceCard(a, target) {
   const s=a.resumeSource;
   const attachment=s.attachment ? `<div class="attachment row wrap">${tile("file")}<div class="grow"><div class="strong small">${esc(s.attachment.name)}</div><div class="muted tiny">${number(Math.ceil(s.attachment.size/1024))} КБ</div></div><a class="btn btn-secondary btn-sm" href="${base}/hr/resume-sources/${enc(s.sourceId)}?download=1">${ic("download")} Скачать</a></div>` : "";
-  return `<div class="stack">${attachment}${s.extractStatus==="manual"?'<p class="note">Исходник сохранён. Текст вложения доступен для ручной проверки после скачивания.</p>':s.extractStatus==="truncated"?'<p class="note">На странице показаны первые 20 000 символов. Полный текст есть в исходном файле.</p>':""}${s.text?`<div class="resume" tabindex="0">${esc(s.text)}</div>`:'<p class="muted small">Текст не указан.</p>'}</div>`;
+  return `<div class="stack">${attachment}${s.extractStatus==="manual"?'<p class="note">Исходник сохранён. Текст вложения доступен для ручной проверки после скачивания.</p>':s.extractStatus==="truncated"?'<p class="note">На странице показаны первые 20 000 символов. Полный текст есть в исходном файле.</p>':""}${s.text?evidenceText(s.text,target):'<p class="muted small">Текст не указан.</p>'}</div>`;
+}
+const handoffOutcomes={proceed:"Продолжить подбор",clarify:"Запросить уточнение",decline:"Не продолжать"};
+const interviewFormats={phone:"Телефонное",onsite:"Очное"};
+const voluntaryReasons={new_job:"Другая работа",workload:"Нагрузка или условия работы",growth:"Профессиональное развитие",personal:"Личные обстоятельства",other:"Другая причина",undisclosed:"Предпочитаю не отвечать"};
+function reportPanel(data) {
+  const labels={education:"Высшее образование",retraining:"Профессиональная переподготовка",refresher:"Повышение квалификации"};
+  const paths={profile_degree:"Профильное высшее образование",degree_and_retraining:"Высшее образование и профильная переподготовка"};
+  const last=data.decision;
+  const quotes=items=>items.map(e=>`<blockquote class="quote">${esc(e.quote)}</blockquote>`).join("");
+  return `<article class="stack" id="print-report">
+    ${cardHead("Справка по отклику",data.fullName+" · "+data.vacancyTitle,btn("Печать / PDF",'data-action="print-report"',"secondary btn-sm","download"))}
+    ${Object.entries(labels).map(([key,label])=>`<div class="criterion"><h3>${esc(label)}</h3>${quotes(data.facts[key])||'<p class="muted small">Сведений в источниках нет.</p>'}</div>`).join("")}
+    ${data.criteria.map(c=>`<div class="criterion"><h3>${esc(c.label)}</h3>
+      ${c.reference?`<p>${esc(c.reference)}</p>`:""}${c.educationPath?`<p>${esc(paths[c.educationPath])}</p>`:""}
+      <p>${esc(statusNames[c.hrOverride?.status||c.status][0])}${c.hrOverride?" · "+esc(c.hrOverride.actorName):""}</p>
+      ${quotes(c.evidence)}<p>${esc(c.hrOverride?.reason||c.question)}</p></div>`).join("")}
+    ${meta([["Следующий шаг",esc(actions[data.stage.transitions[0]] || (data.stage.outcome?stages[data.stage.outcome][0]:"Сверить сведения"))],
+    ["Последнее решение",last?`${esc(actions[last.action]||last.action)} · ${esc(last.actorName)} · ${esc(date(last.occurredAt,true))}${last.reason?" · "+esc(last.reason):""}`:"Решение ещё не зафиксировано"]])}</article>`;
+}
+function handoffAnswer(answer) {
+  return answer?`<div class="note">${esc(handoffOutcomes[answer.outcome])} · ${esc(answer.actor)} · ${esc(date(answer.at,true))}<p>${esc(answer.note)}</p></div>`:'<p class="muted small">Ожидает ответа подразделения.</p>';
+}
+function handoffBrief(data, showIdentity=true) {
+  return `<div class="stack-sm">${showIdentity?`<h3>${esc(data.fullName)}</h3><p class="muted small">${esc(data.vacancyTitle)}</p>`:""}
+    <ul class="review-brief">${data.criteria.map(c=>`<li><strong>${esc(c.label)}</strong>
+      <p class="small">${esc(statusNames[c.status][0])}${c.reference?" · "+esc(c.reference):""}</p>
+      ${c.reviewReason?`<p class="small">${esc(c.reviewReason)}</p>`:""}
+      ${c.question?`<p class="small">${esc(c.question)}</p>`:""}</li>`).join("")}</ul></div>`;
+}
+function workflowPanel(handoff,reviews,interviews,canSend) {
+  return `<div class="stack">${cardHead("Передача подразделению","",!handoff&&canSend?btn("Передать карточку",'data-action="handoff"',"secondary","link"):"")}
+  ${handoff?`${meta([["Ответственный",esc(handoff.assigneeId)],["Ответить до",esc(date(handoff.dueAt,true))],["Передал",esc(handoff.sentBy)]])}${handoffAnswer(handoff.response)}`:""}
+  ${cardHead("Интервью")}${interviews.items.map(i=>`<div class="criterion">${esc(interviewFormats[i.format]||"Интервью")} · ${esc(date(i.completedAt||i.scheduledAt,true))} · ${esc(i.completedAt?(handoffOutcomes[i.result]||"Состоялось"):"Назначено")}${i.notes?`<p>${esc(i.notes)}</p>`:""}
+    ${i.completedAt?(i.invitationId?btn("Открыть анкету",`data-action="invitation" data-id="${esc(i.invitationId)}"`):btn("Запросить обратную связь",`data-action="interview-survey" data-id="${esc(i.id)}"`)):""}</div>`).join("") || '<p class="muted small">Интервью пока нет.</p>'}
+  ${interviews.nextCursor?link(pagePath(location.pathname,{interviewCursor:interviews.nextCursor},true),"Следующие интервью"):""}
+  ${cardHead("Смежные вакансии","",btn("Проверить по другой вакансии",'data-action="related-review"',"secondary","brief"))}
+  ${reviews.items.map(review=>`<details class="criterion"><summary>${esc(review.vacancyTitle)} · ${esc(date(review.reviewedAt,true))} · ${esc(review.reviewedBy)}</summary>
+    ${review.criteria.map(c=>`<p>${esc(c.label)} · ${esc(statusNames[c.status][0])}${c.question?" · "+esc(c.question):""}</p>`).join("")}</details>`).join("") || '<p class="muted small">Дополнительных проверок пока нет.</p>'}
+  ${reviews.nextCursor?link(pagePath(location.pathname,{reviewCursor:reviews.nextCursor},true),"Следующие проверки"):""}</div>`;
+}
+async function departmentView() {
+  const requests=new URLSearchParams(location.search).get("tab")==="requests";
+  const signOut=actor.hosted?'<a class="btn btn-quiet" target="_top" href="/signout-with-chatgpt?returnTo=%2Fvacancies">Выйти</a>':btn("Выйти",'data-action="logout"',"quiet","logout");
+  const nav=`<nav class="tabs" aria-label="Работа подразделения"><a data-link href="/department" ${!requests?'aria-current="page"':""}>Карточки от HR</a>
+    <a data-link href="/department?tab=requests" ${requests?'aria-current="page"':""}>Заявки на подбор</a></nav>`;
+  if(requests){
+    const data=await getJSON("/department/requisitions"+location.search);
+    return `<div class="public-narrow stack">${heading("Кабинет подразделения","",signOut)}${nav}
+      <div>${btn("Создать заявку",'data-action="new-requisition"',"primary","plus")}</div>
+      ${data.items.map(item=>`<section class="card pad stack-sm">${cardHead(item.title,item.department,chip(requisitionStatuses[item.status]))}
+        <p class="pre">${esc(item.description)}</p><div class="row wrap">${item.status==="draft"?btn("Подтвердить и передать",`data-action="submit-requisition" data-id="${enc(item.id)}"`,"primary","check")
+          +btn("Изменить",`data-action="edit-requisition" data-id="${enc(item.id)}"`,"secondary","edit"):""}
+          ${item.vacancySlug?link("/vacancies/"+enc(item.vacancySlug),"Открыть вакансию","secondary","brief"):""}</div></section>`).join("")||empty("Заявок пока нет")}
+      ${pagination(data.nextCursor)}</div>`;
+  }
+  const data=await getJSON("/department/handoffs"+location.search);
+  return `<div class="public-narrow stack">${heading("Кабинет подразделения","",signOut)}${nav}
+  ${data.items.map(item=>`<section class="card pad stack-sm">${cardHead(item.shared.fullName,item.shared.vacancyTitle)}
+    ${meta([["Ответить до",esc(date(item.dueAt,true))],["Передал",esc(item.sentBy)]])}${item.note?`<p>${esc(item.note)}</p>`:""}
+    ${handoffBrief(item.shared,false)}
+    ${item.response?handoffAnswer(item.response):`<form class="stack-sm" data-form="handoff-response" data-id="${esc(item.id)}">
+      ${selectField("outcome","Результат",Object.entries(handoffOutcomes),"proceed")}${input("note","Обоснование",{type:"textarea",required:true,max:1200})}
+      ${errors}<div>${submit("Ответить","check")}</div></form>`}</section>`).join("") || empty("Карточек пока нет")}
+  ${pagination(data.nextCursor)}</div>`;
 }
 function interviewCard(record) {
   if (!record.interview) return "";
@@ -446,38 +570,98 @@ function employmentCard(e) {
   return `<section class="card pad stack-sm"><h2>Трудоустройство</h2><div>${e.status==="active"?chip("Работает","green",true):chip("Трудоустройство завершено","",true)}</div>
   ${meta([["Дата найма",esc(date(e.startedAt))],...(e.termination?[["Дата увольнения",esc(date(e.termination.effectiveAt))]]:[])])}${actionsHtml}</section>`;
 }
-async function applicationDetail(id) {
+
+const questionReasons = {
+  required_gap: "Уточнить обязательное требование",
+  optional_gap: "Уточнить дополнительное требование",
+  verify_evidence: "Проверить пример из отклика",
+  opening: "Начать разговор"
+};
+
+function interviewQuestionRow(question, selected, canRecord=false) {
+  return `<div class="interview-question" data-plan-question="${esc(question.criterionId)}">
+    <div class="row between wrap">
+      <label class="interview-select"><input type="checkbox" data-plan-selected ${selected?"checked":""}>
+        <strong>${esc(question.label)}</strong></label>
+      <span class="tiny muted">${esc(questionReasons[question.reason])}</span>
+    </div>
+    <textarea class="control" rows="3" maxlength="300" aria-label="Вопрос: ${esc(question.label)}" data-plan-text>${esc(question.question)}</textarea>
+    ${question.evidence?`<blockquote class="quote small">${esc(question.evidence.quote)}</blockquote>`:""}
+    ${canRecord?`<div>${btn("Записать ответ",`data-action="interview-answer" data-criterion="${question.reason==="opening"?"":enc(question.criterionId)}"`,"quiet btn-sm","edit")}</div>`:""}
+  </div>`;
+}
+
+function interviewPlanPanel(plan, canRecord) {
+  return `<div class="interview-plan stack" data-interview-plan>
+    <div class="stack-sm">
+      ${cardHead("Вопросы по отклику","Сначала вопросы по требованиям, для которых нужно больше сведений.")}
+      <div class="row wrap">
+        ${btn("Скопировать выбранные",'data-action="copy-interview-plan"',"primary","copy")}
+        ${plan.canRefine?btn("Уточнить формулировки с ИИ",'data-action="refine-interview-plan"',"secondary","chat"):""}
+      </div>
+      <p class="small muted" data-plan-status aria-live="polite" hidden></p>
+    </div>
+    <div class="stack-sm" data-current-questions>
+      ${plan.questions.map((q,i)=>interviewQuestionRow(q,i<4,canRecord)).join("")}
+    </div>
+    ${plan.notes.length?`<section class="stack-sm"><h2>Ответы со звонков и встреч</h2>
+      ${plan.notes.map(note=>`<div class="criterion stack-sm"><h3>${esc(note.question)}</h3>
+        <p class="pre">${esc(note.text)}</p>${note.nextStep?`<p class="small"><strong>Следующий шаг.</strong> ${esc(note.nextStep)}</p>`:""}
+        <p class="tiny muted">${esc(note.actorName)} · ${esc(date(note.recordedAt,true))}</p></div>`).join("")}</section>`:""}
+    <section class="stack-sm">
+      ${cardHead("Другие вакансии для обсуждения")}
+      ${plan.moreVacancies?`<p class="small muted">Проверены ${plan.comparedVacancies} недавно обновлённых вакансий. Другие доступны во вкладке "Взаимодействие".</p>`:""}
+      ${plan.alternatives.length?plan.alternatives.map((option,i)=>`<details class="criterion alternative-role" ${i===0?"open":""}>
+        <summary><strong>${esc(option.title)}</strong><span class="small muted">${esc(option.department)}</span></summary>
+        <div class="stack-sm">
+          ${option.required?`<p class="small">Есть сведения по ${option.supportedRequired} из ${option.required} обязательных требований.</p>`:""}
+          ${option.evidence.map(item=>`<div class="stack-sm"><strong class="small">${esc(item.label)}</strong><blockquote class="quote">${esc(item.quote)}</blockquote></div>`).join("")}
+          ${option.questions.map(q=>interviewQuestionRow(q,false)).join("")}
+          <div class="row wrap">${btn("Сохранить проверку",`data-action="save-interview-role" data-vacancy="${enc(option.vacancyId)}"`,"secondary btn-sm","check")}
+            <span class="small muted" data-related-status aria-live="polite"></span></div>
+        </div>
+      </details>`).join(""):`<p class="small muted">${plan.comparedVacancies ? "В источниках нет оснований предложить другую вакансию." : "Других опубликованных вакансий пока нет."}</p>`}
+    </section>
+  </div>`;
+}
+
+async function applicationDetail(id,renderRun) {
   const url="/hr/applications/"+enc(id);
   const a=await getJSON(url);
   const p=new URLSearchParams(location.search);
-  const tabs=[["assessment","Разбор"],["resume","Резюме"],["test","Тест"],["clarification","Уточнения"],["history","История"]];
+  const tabs=[["assessment","Разбор"],["interview","Вопросы для интервью"],["resume","Резюме"],["test","Тест"],["clarification","Уточнения"],["history","История"],["report","Справка"],["workflow","Взаимодействие"]];
   const active=tabs.find(([key])=>key===p.get("tab"))?.[0]||"assessment";
   const [evaluation,person,thread,history,employment,interview]=await Promise.all([
-    getJSON(url+"/assessment"),
-    a.candidateId ? getJSON("/hr/candidates/"+enc(a.candidateId)+"?limit=1") : null,
+    active==="assessment" ? getJSON(url+"/assessment") : null,
+    a.candidateId ? getJSON("/hr/candidates/"+enc(a.candidateId)+"?summary=1") : null,
     active==="clarification"&&a.clarificationThreadId ? getJSON("/hr/clarifications/"+enc(a.clarificationThreadId)) : null,
     active==="history" ? getJSON(url+"/history"+(p.get("cursor")?"?cursor="+enc(p.get("cursor")):"")) : null,
     a.stage.employmentId ? getJSON("/hr/employments/"+enc(a.stage.employmentId)) : null,
     a.stage.interviewId ? getJSON("/hr/interviews/"+enc(a.stage.interviewId)) : null
   ]);
   const record={a,evaluation,person,thread,history,employment,interview};
-  appDetailData=record;
   let detail="";
   if(active==="assessment") detail=`<div class="stack">${cardHead("Разбор по критериям","Локальная проверка по источникам отклика.",
-    evaluation.items.length && evaluation.assessmentStatus!=="pending" ? btn("Вопросы для интервью",'data-action="interview-draft"',"secondary btn-sm","chat") : "")}${assessmentCards(evaluation)}</div>`;
+    evaluation.assessmentStatus!=="pending" ? link(pagePath(url,{tab:"interview",back:p.get("back")}),"Вопросы для интервью","secondary btn-sm","chat") : "")}${assessmentCards(evaluation)}</div>`;
+  if(active==="interview") detail=interviewPlanPanel(await getJSON(url+"/interview-plan"),!a.outcome);
   if(active==="resume") detail=`<div class="stack">${cardHead("Исходное резюме")}${sourceCard(a)}</div>`;
   if(active==="test") detail=`<div class="stack">${cardHead("Тест при отклике",a.testStatus==="not_completed"?"Тест не заполнен.":"Сохранённые вопросы и ответы.")}${a.answers.length?a.answers.map(x=>`<article class="criterion"><h3>${esc(x.question)}</h3><div class="small pre">${known(x.value)}</div></article>`).join(""):empty("Тест не прикреплён")}</div>`;
   if(active==="clarification") detail=`<div class="stack">${cardHead("Уточнения кандидату","Ответы хранятся вместе с источником отклика.")}${thread ? thread.questions.map(q=>`<article class="criterion"><div class="chat-bubble pre">${esc(q.text)}</div>
     ${q.answer?`<div class="chat-answer pre">${esc(q.answer)}</div>`:chip("Ожидает ответа","amber",true)}</article>`).join(""):empty("Уточнений пока нет","","chat")}
-    ${thread?.questions.some(q=>q.status==="open")&&(a.contact||person?.contact)?btn("Подготовить ссылку для кандидата",`data-action="clarify-link" data-id="${enc(thread.threadId)}"`,"secondary","link"):""}</div>`;
+    ${!a.outcome&&thread?.questions.some(q=>q.status==="open")&&(a.contact||person?.contact)?btn("Подготовить ссылку для кандидата",`data-action="clarify-link" data-id="${enc(thread.threadId)}"`,"secondary","link"):""}</div>`;
   if(active==="history") detail=`<div class="stack">${cardHead("История этапов")}
     <ol class="history">${history.items.map(e=>`<li><strong class="small">${esc(actions[e.action]||stages[e.toStage]?.[0]||"Обновление")}</strong><p class="tiny muted">${esc(date(e.occurredAt,true))} · ${esc(e.actorName)}</p>
     ${e.reason?`<p class="small">${esc(e.reason)}</p>`:""}</li>`).join("")}</ol>${pagination(history.nextCursor)}</div>`;
+  if(active==="report") detail=reportPanel(await getJSON(url+"/report"));
+  if(active==="workflow") detail=workflowPanel(...await Promise.all([getJSON(url+"/handoff"),getJSON(url+"/related-reviews?"+new URLSearchParams({cursor:p.get("reviewCursor")||""})),getJSON(url+"/interviews?"+new URLSearchParams({cursor:p.get("interviewCursor")||""}))]),!a.outcome);
   const activeIndex=["received","review","interview","decision"].indexOf(a.stage.currentStage);
-  return `<div class="row wrap">${link("/hr/applications","Назад к откликам","secondary btn-sm")}
+  const back=returnLocation("/hr/applications");
+  const backLabel=back.startsWith("/hr/candidates/")?"Назад к кандидату":back.startsWith("/hr/candidates")?"Назад к кандидатам":"Назад к откликам";
+  if(renderRun===navRun)appDetailData=record;
+  return `<div class="row wrap">${link(back,backLabel,"secondary btn-sm")}
     ${chip(sourceNames[a.sourceChannel])}</div>
   <div class="page-head"><div class="detail-title">${avatar(a.fullName)}<div class="grow"><h1 tabindex="-1">${esc(a.fullName)}</h1><p class="muted">${esc(a.vacancyTitle)}</p></div></div>${stagePill(a)}</div>
-  <div class="details-grid"><section class="card pad stack"><nav class="tabs" aria-label="Материалы отклика">${tabs.map(([key,label])=>`<a data-link href="${esc(pagePath(url,{tab:key==="assessment"?"":key}))}" ${key===active?'aria-current="page"':""}>${esc(label)}</a>`).join("")}</nav>${detail}</section>
+  <div class="details-grid"><section class="card pad stack"><nav class="tabs" aria-label="Материалы отклика">${tabs.map(([key,label])=>`<a data-link href="${esc(pagePath(url,{tab:key==="assessment"?"":key,back:p.get("back")}))}" ${key===active?'aria-current="page"':""}>${esc(label)}</a>`).join("")}</nav>${detail}</section>
   <aside class="stack">
     <section class="card pad stack-sm"><h2>Этап подбора</h2><div>${stagePill(a)}</div>
     ${a.triage && a.triage.status!=="closed" ? `<div class="note stack-sm">${intakeStatus(a.triage)}<p>${esc(intakeReasons[a.triage.reason])}</p></div>` : ""}
@@ -489,31 +673,57 @@ async function applicationDetail(id) {
       ${a.outcome!=="hired"?btn(person?"Изменить связь":"Связать с профилем",'data-action="candidate-link"',"secondary","link"):""}
     </section>
     ${interviewCard(record)}${employmentCard(employment)}
-    <section class="card pad stack-sm"><h2>Сведения об отклике</h2>${meta([["Email",known(a.contact)],["Дата получения",a.sourceReceivedAt?esc(date(a.sourceReceivedAt,true)):"Не указано"],...(a.importedAt?[["Дата импорта",esc(date(a.importedAt,true))]]:[])])}</section>
+    <section class="card pad stack-sm"><h2>Сведения об отклике</h2>${meta([["Email",known(a.contact)],["Дата получения",a.sourceReceivedAt?esc(date(a.sourceReceivedAt,true)):"Не указано"],...(a.sourceAccount?[["Учётная запись источника",esc(a.sourceAccount)]]:[]),...(a.sourceSubject?[["Тема письма",esc(a.sourceSubject)]]:[]),...(a.importedAt?[["Дата импорта",esc(date(a.importedAt,true))]]:[])])}</section>
   </aside></div>`;
 }
 async function candidatesView() {
   const p=new URLSearchParams(location.search);
   const r=await getJSON("/hr/candidates"+location.search);
+  const columns=[["contact","Email"],["education","Образование"],["additionalEducation","Доп. образование"],["experience","Опыт"]];
+  const shown=listSettings("kadry-candidate-columns",columns.map(([key])=>key));
+  const visible=columns.filter(([key])=>shown.includes(key));
   const rows=r.items.map((x,i)=>{
-    const url="/hr/candidates/"+enc(x.candidateId);
-    return {href:url,cells:[`<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link href="${url}" class="table-name">${esc(x.fullName)}</a></div></div>`,known(x.contact),known(x.education),known(x.additionalEducation),known(x.experience)]};
+    const unlinked=x.kind==="application";
+    const url=listDetail(unlinked?"/hr/applications/"+enc(x.applicationId):"/hr/candidates/"+enc(x.candidateId));
+    const summary=unlinked?`<span class="table-meta">${esc(x.vacancyTitle)} · ${esc(date(x.receivedAt))} · ${esc(sourceNames[x.sourceChannel])}</span>`:"";
+    const actions=unlinked?`<div class="row wrap">${link(url+"&candidateAction=link","Связать","quiet btn-sm")}${link(url+"&candidateAction=create","Создать профиль","quiet btn-sm")}</div>`:"";
+    return {href:url,cells:[`<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link href="${esc(url)}" class="table-name">${esc(x.fullName)}</a>${summary}${actions}</div></div>`,...visible.map(([key])=>known(x[key]))]};
   });
-  return `${heading("Кандидаты","Найдите профиль по фамилии или имени и откройте историю откликов.",btn("Создать профиль",'data-action="new-candidate"',"primary","plus"))}
-  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}${input("skills","Навыки и опыт",{max:120,value:p.get("skills"),placeholder:"Например, SQL отчётность"})}${input("additionalEducation","Доп. образование",{max:160,value:p.get("additionalEducation"),placeholder:"Например, юриспруденция"})}
+  return `${heading("Кандидаты","Найдите профиль или новый отклик по фамилии.",btn("Создать профиль",'data-action="new-candidate"',"primary","plus"))}
+  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}${input("skills","Навыки и опыт",{max:120,value:p.get("skills")})}${input("education","Образование",{max:160,value:p.get("education")})}${input("additionalEducation","Доп. образование",{max:160,value:p.get("additionalEducation")})}
   <div class="row wrap" style="align-self:end">${submit("Найти","search")}${link("/hr/candidates","Сбросить","quiet")}</div></form>
-  <section class="card">${rows.length?table([["Кандидат",23],["Email",22],["Образование",18],["Доп. образование",19],["Опыт",18]],rows):empty("Кандидаты не найдены","Измените параметры поиска или создайте профиль.","users")}${pagination(r.nextCursor)}</section>`;
+  <details class="card pad"><summary>Колонки реестра</summary><form data-form="candidate-columns" class="row wrap">${columns.map(([key,label])=>check(key,label,shown.includes(key))).join("")}${submit("Сохранить")}</form></details>
+  <section class="card">${rows.length?table(["Кандидат",...visible.map(([,label])=>label)],rows):empty("Кандидаты не найдены","Измените параметры поиска или создайте профиль.","users")}${pagination(r.nextCursor)}</section>`;
 }
 async function candidateView(id) {
   const person=await getJSON("/hr/candidates/"+enc(id)+location.search);
   const source=person.factsSource?.type==="resume"?link("/hr/applications/"+enc(person.factsSource.applicationId)+"?tab=resume","Исходное резюме","quiet btn-sm","file"):person.factsSource?.actorName?`<div class="small muted">Запись HR · ${esc(person.factsSource.actorName)} · ${esc(date(person.factsSource.at))}</div>`:"";
-  return `<div>${link("/hr/candidates","Назад к кандидатам","secondary btn-sm")}</div>${heading(person.fullName,person.contact||"Email не указан")}
+  return `<div>${link(returnLocation("/hr/candidates"),"Назад к кандидатам","secondary btn-sm")}</div>${heading(person.fullName,person.contact||"Email не указан")}
   <section class="card pad stack-sm"><h2>Профиль кандидата</h2>${meta([["Образование",known(person.education)],["Доп. образование",known(person.additionalEducation)],["Опыт",known(person.experience)]])}${source}</section>
-  <section class="card"><div class="table-title"><h2>История откликов</h2></div>${applicationTable(person.applications,true)}${pagination(person.nextCursor)}</section>`;
+  <section class="card"><div class="table-title"><h2>История откликов</h2></div>${applicationTable(person.applications,true)}${pagination(person.nextCursor)}</section>
+  ${actor.scoped?"":`<section class="card pad stack-sm">${cardHead("Архивные документы","",btn("Добавить документ",`data-action="archive-document" data-id="${enc(id)}"`,"secondary","upload"))}
+  ${person.archiveDocuments.map(archiveDocumentView).join("") || '<p class="muted">Документов пока нет.</p>'}
+  ${person.archiveNextCursor?link(pagePath(location.pathname,{archiveCursor:person.archiveNextCursor},true),"Следующие документы"):""}</section>`}`;
+}
+const archiveTypes={application:"Отклик",interview:"Интервью",decision:"Решение",other:"Другое"};
+const archiveOutcomes={hired:"Принят",rejected:"Отказ",withdrawn:"Отозван",pending:"В работе"};
+function archiveDocumentView(doc) {
+  const events=[...doc.events].sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));
+  return `<details class="criterion"><summary>${esc(doc.title)} · ${esc(doc.sourceAccount)}</summary>
+    <div class="stack-sm archive-doc-body">
+      ${doc.attachment?`<a class="btn btn-secondary btn-sm" href="${base}/hr/archive-documents/${enc(doc.documentId)}">Скачать ${esc(doc.attachment.name)}</a>`:""}
+      ${doc.education||doc.additionalEducation?meta([...(doc.education?[["Образование",esc(doc.education)]]:[]),...(doc.additionalEducation?[["Доп. образование",esc(doc.additionalEducation)]]:[])]):""}
+      ${events.length?`<ol class="history">${events.map(e=>`<li><strong>${esc(e.position)}</strong>
+        <p class="small muted">${esc([date(e.date),archiveTypes[e.type],archiveOutcomes[e.outcome]].filter(Boolean).join(" · "))}</p>
+        <p class="small">${esc(e.note)}</p>${e.excerpt?`<blockquote class="quote small">${esc(e.excerpt)}</blockquote>`:""}</li>`).join("")}</ol>`:""}
+      ${doc.text?`<details><summary>Исходный текст</summary><div class="resume">${esc(doc.text)}</div></details>`:""}
+    </div></details>`;
 }
 function surveySummary(cards) {
   return `<div class="dashboard-grid">${cards.map(x=>{
-    const names=[["Отправлено",number(x.sent)],["Ответили",number(x.answered)],["Средняя оценка понятности",x.averages.clarity==null?"—":number(x.averages.clarity)+" / 5"]];
+    const names=[["Отправлено",number(x.sent)],["Ответили",number(x.answered)]];
+    if(x.type==="voluntary_exit") names.push(...(x.reasons||[]).map(r=>[voluntaryReasons[r.category]||r.category,number(r.total)]));
+    else names.push(["Средняя оценка понятности",x.averages.clarity==null?"—":number(x.averages.clarity)+" / 5"]);
     if(x.type==="exit_feedback") names.push(["Средняя оценка коммуникации",x.averages.communication==null?"—":number(x.averages.communication)+" / 5"]);
     return `<section class="card pad stack-sm">${cardHead(typeLabels[x.type],"",tile("feedback"))}${meta(names)}</section>`;
   }).join("")}</div>`;
@@ -549,7 +759,7 @@ async function analyticsView() {
 }
 async function feedbackView() {
   const p=new URLSearchParams(location.search);
-  const type=p.get("type")==="exit_feedback"&&actor.role==="admin"?"exit_feedback":"interview_feedback";
+  const type=actor.role==="admin"&&Object.hasOwn(typeLabels,p.get("type"))?p.get("type"):"interview_feedback";
   const status=p.get("status")||"";
   const [r,analytics]=await Promise.all([
     getJSON(pagePath("/hr/survey-invitations",{type,status,cursor:p.get("cursor"),limit:8})),
@@ -560,7 +770,7 @@ async function feedbackView() {
     chip(...(invitationLabels[item.status]||invitationLabels.prepared),true),esc(date(item.sentAt)),
     btn("Открыть",`data-action="invitation" data-id="${esc(item.invitationId)}"`,"secondary btn-sm","feedback")
   ] }));
-  const nav=Object.entries(typeLabels).filter(([id])=>id!=="exit_feedback"||actor.role==="admin").map(([id,label])=>`<a data-link href="/hr/feedback?type=${id}" ${type===id?'aria-current="page"':""}>${esc(label)}</a>`).join("");
+  const nav=Object.entries(typeLabels).filter(([id])=>id==="interview_feedback"||actor.role==="admin").map(([id,label])=>`<a data-link href="/hr/feedback?type=${id}" ${type===id?'aria-current="page"':""}>${esc(label)}</a>`).join("");
   const overview=analytics.surveys.filter(item=>item.type===type);
   const filters=[["","Все анкеты"],["prepared","К отправке"],["sent","Ждут ответа"],["answered","С ответами"]].map(([value,label])=>link(pagePath("/hr/feedback",{type,status:value}),label,status===value?"secondary btn-sm":"quiet btn-sm")).join("");
   return `${heading("Обратная связь","Отдельно по интервью и увольнениям.")}
@@ -604,6 +814,7 @@ async function publicVacancyView(slug) {
     ${link("/vacancies/"+enc(slug)+"?apply=1","Откликнуться","primary","check")}</aside></div>`;
 }
 function chatForm(thread) {
+  if(thread.closed)return '<section class="card pad"><p class="note">Уточнения закрыты. Подбор по этому отклику завершён.</p></section>';
   const open=thread.questions.filter(q=>q.status==="open");
   return `<section class="card pad stack"><h2>Уточнения по отклику</h2><p class="small muted">Отвечайте только о рабочих навыках и опыте. Не указывайте сведения о здоровье, семье и контакты других людей.</p>
     <form class="stack" data-form="clarifications" data-id="${esc(thread.threadId)}">
@@ -617,9 +828,15 @@ async function receiptView(code, generation) {
     if(activeReceipt===code && generation===navRun) render();
   },1600); }
   const label={ pending:"Проверяем, нужны ли уточнения.",ready:thread?"Можно ответить на вопросы ниже.":"Кадровая команда получила ваш отклик.",failed:"Кадровая команда проверит резюме вручную." };
-  return `<div class="public-narrow stack"><div class="card pad stack success-banner">${tile("check","green")}<h1 tabindex="-1">Отклик отправлен</h1>
-    <div class="small muted">Номер отклика <span class="receipt-code">${esc(code)}</span></div><p class="small muted">${esc(label[r.assessmentStatus]||label.ready)}</p></div>
-    ${thread?chatForm(thread):""}</div>`;
+  const progress={received:"Отклик получен",review:"На рассмотрении",interview:"Этап интервью",decision:"Рассматривается решение"};
+  const finalStatus={hired:"Принят на работу",rejected:"Отбор завершён"};
+  const status=r.outcome?finalStatus[r.outcome]:progress[r.stage];
+  return `<div class="public-narrow stack"><div class="card pad stack success-banner">${tile("check","green")}<h1 tabindex="-1">Статус отклика</h1>
+    <div class="small muted">Номер отклика <span class="receipt-code">${esc(code)}</span></div><strong>${esc(status||progress.received)}</strong>
+    ${!r.outcome?`<p class="small muted">${esc(label[r.assessmentStatus]||label.ready)}</p>`:""}
+    ${r.candidateMessage?`<p class="note pre">${esc(r.candidateMessage)}</p>`:""}
+    <p class="tiny muted">Сохраните ссылку и открывайте её в этом браузере.</p></div>
+    ${thread&&!r.outcome?chatForm(thread):""}</div>`;
 }
 async function clarificationView(id) {
   const thread=await getJSON("/public/clarifications/"+enc(id));
@@ -630,18 +847,20 @@ async function clarificationAccess(token) {
     <form class="stack" data-form="clarification-access" data-token="${esc(token)}">${errors}<div>${submit("Открыть вопросы","chat")}</div></form></div>`;
 }
 async function surveyView(token) {
-  if (submission===token) return `<div class="public-narrow card pad stack success-banner">${tile("check","green")}<h1 tabindex="-1">Спасибо за обратную связь</h1><p class="muted small">Ваш ответ сохранён.</p></div>`;
-  const data=await getJSON("/public/surveys/"+enc(token));
+  const data=submission===token?{submitted:true}:await getJSON("/public/surveys/"+enc(token));
+  if(data.submitted) return `<div class="public-narrow card pad stack success-banner">${tile("check","green")}<h1 tabindex="-1">Спасибо за обратную связь</h1><p class="muted small">Ваш ответ сохранён.</p></div>`;
   return `<div class="public-narrow card pad stack-lg">${heading(data.title,"Заполнение анкеты добровольное.")}
   <p class="note">${esc(data.audience)}</p><form class="stack-lg" data-form="survey" data-token="${esc(token)}">
-    ${data.questions.map(q=>q.type==="rating"?`<fieldset class="rating-set" data-rating="${esc(q.id)}"><legend>${esc(q.text)}</legend><div class="rating">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${esc(q.id)}" value="${n}" required><span>${n}</span></label>`).join("")}</div></fieldset>`:input(q.id,q.text,{type:"textarea",optional:!q.required,max:1200})).join("")}
+    ${data.questions.map(q=>q.type==="rating"?`<fieldset class="rating-set" data-rating="${esc(q.id)}"><legend>${esc(q.text)}</legend><div class="rating">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${esc(q.id)}" value="${n}" required><span>${n}</span></label>`).join("")}</div></fieldset>`:q.type==="choice"?selectField(q.id,q.text,[["","Выберите ответ"],...Object.entries(q.options)],"","required"):input(q.id,q.text,{type:"textarea",optional:!q.required,max:1200})).join("")}
     ${errors}<div>${submit("Отправить ответ","check")}</div>
   </form></div>`;
 }
 function showDialog(title, content) {
-  modal.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${esc(title)}</h2>${btn("","data-action=close-dialog aria-label=\"Закрыть\"","quiet btn-icon","close")}</div><div class="dialog-body">${content}</div>`;
-  if(!modal.open) modal.showModal();
+  const replacing=modal.open;
+  modal.innerHTML=`<div class="dialog-head"><h2 id="dialog-title" tabindex="-1">${esc(title)}</h2>${btn("","data-action=close-dialog aria-label=\"Закрыть\"","quiet btn-icon","close")}</div><div class="dialog-body">${content}</div>`;
+  if(!replacing) modal.showModal(); else modal.querySelector("#dialog-title").focus();
   modal.scrollTop=0;
+  modal.querySelector("[data-evidence-mark]")?.scrollIntoView({block:"center"});
 }
 function candidateForm(a) {
   return `<form class="stack" data-form="create-candidate" data-link-id="${esc(a?.applicationId||"")}">${errors}
@@ -651,7 +870,7 @@ function candidateForm(a) {
 }
 async function candidateMatches(query, append = false, cursor = "") {
   const seq=++candidateSearchSeq;
-  const result=await getJSON("/hr/candidates?q="+enc(query)+"&limit=8"+(cursor?"&cursor="+enc(cursor):""));
+  const result=await getJSON("/hr/candidates?q="+enc(query)+"&profilesOnly=1&limit=8"+(cursor?"&cursor="+enc(cursor):""));
   const target=modal.querySelector("[data-matches]");
   if(!target||seq!==candidateSearchSeq)return;
   const items=result.items.map(x=>`<div class="criterion"><div class="row align-start">
@@ -702,23 +921,26 @@ async function render({focus=false}={}) {
   const isHr=path==="/hr"||path.startsWith("/hr/");
   activeReceipt="";
   try {
-    if(path==="/"||isHr) {
+    const isDepartment=path==="/department";
+    if(path==="/"||isHr||isDepartment) {
       const session=await getJSON("/auth/session");
       if(run!==navRun)return;
       actor=session.actor;
       demoAvailable=session.demoAvailable;
-      if(path==="/")return go(actor?"/hr":"/vacancies",true);
+      if(path==="/")return go(actor?.role==="department"?"/department":actor?"/hr":"/vacancies",true);
+      if(isHr&&actor?.role==="department")return go("/department",true);
       if (!session.authenticated) {
-        app.innerHTML=loginView();
+        app.innerHTML=loginView(isDepartment);
         document.title="Вход · Кадры · Горький";
         return;
       }
     }
     let view;
-    if(isHr) {
+    if(isDepartment) view=await departmentView();
+    else if(isHr) {
       if(bits.length===1)view=await overview();
       else if(bits[1]==="vacancies")view=bits[2]?await editVacancyPage(bits[2]):await listVacancies();
-      else if(bits[1]==="applications")view=bits[2]?await applicationDetail(bits[2]):await applicationList();
+      else if(bits[1]==="applications")view=bits[2]?await applicationDetail(bits[2],run):await applicationList();
       else if(bits[1]==="candidates")view=bits[2]?await candidateView(bits[2]):await candidatesView();
       else if(bits[1]==="analytics")view=await analyticsView();
       else if(bits[1]==="feedback")view=await feedbackView();
@@ -734,17 +956,38 @@ async function render({focus=false}={}) {
     const title=app.querySelector("h1");
     document.title=(title?.textContent?title.textContent+" · ":"")+"Кадры · Горький";
     if(focus)title?.focus({preventScroll:true});
+    syncPriorityFilter();
+    const candidateAction=new URLSearchParams(location.search).get("candidateAction");
+    if (bits[1]==="applications" && bits[2] && ["link","create"].includes(candidateAction)) {
+      history.replaceState(history.state,"",pagePath(location.pathname,{candidateAction:null},true));
+      if(candidateAction==="link") await candidateLinkModal();
+      else showDialog("Создать профиль",candidateForm(appDetailData.a));
+    }
   } catch(error) {
     if(run===navRun)app.innerHTML=loadError(error,isHr&&!!actor);
   }
 }
-function go(url, replace=false) {
-  if(url!==location.pathname+location.search)history[replace?"replaceState":"pushState"]({},"",url);
+function currentPage() { return location.pathname + location.search; }
+function rememberQueue() { if (returnPath(location.pathname)) queueScroll.set(currentPage(),window.scrollY); }
+async function go(url, replace=false) {
+  if(url!==currentPage()) {
+    rememberQueue();
+    history[replace?"replaceState":"pushState"]({},"",url);
+  }
   if(modal.open)modal.close();
-  window.scrollTo(0,0);
-  return render({focus:true});
+  await render({focus:true});
+  window.scrollTo(0,queueScroll.get(currentPage()) || 0);
 }
-window.addEventListener("popstate",()=>{ if(modal.open)modal.close();render({focus:true}); });
+history.scrollRestoration = "manual";
+window.addEventListener("popstate",async()=>{ if(modal.open)modal.close(); await render({focus:true}); window.scrollTo(0,queueScroll.get(currentPage()) || 0); });
+function syncPriorityFilter() {
+  const form=document.querySelector('[data-form="app-filters"]');
+  if(!form) return;
+  const enabled=Boolean(form.elements.vacancyId.value);
+  form.elements.priority.disabled=!enabled;
+  if(!enabled) form.elements.priority.checked=false;
+  form.querySelector("[data-priority-hint]").hidden=enabled;
+}
 function formError(form,error) {
   const box=form.querySelector("[data-form-error]");
   if(box){
@@ -821,6 +1064,7 @@ const submitHandlers = {
     const body=Object.fromEntries(["title","department","location","schedule","slug","description"].map(x=>[x,f.get(x)]));
     Object.assign(body,vacancyParts,{formFields:[{id:"resume",required:f.has("resumeRequired")}]});
     const current=form.dataset.id;
+    if(!current&&form.dataset.requisition)body.requisitionId=form.dataset.requisition;
     const v=await mutate(form,"save",current?"/hr/vacancies/"+enc(current)+"/draft":"/hr/vacancies",current?"PUT":"POST",body);
     form.dataset.id=v.vacancyId;
     const doPublish=trigger?.value==="publish";
@@ -830,6 +1074,10 @@ const submitHandlers = {
   },
   async "app-filters"(form,f) {
     await go(pagePath("/hr/applications",Object.fromEntries(f)));
+  },
+  async "candidate-columns"(form,f) {
+    localStorage.setItem("kadry-candidate-columns",JSON.stringify([...f.keys()]));
+    await render();
   },
   async "candidate-filter"(form,f) {
     await go(pagePath("/hr/candidates",Object.fromEntries(f)));
@@ -843,10 +1091,71 @@ const submitHandlers = {
     connectData.query=String(f.get("q")||"").trim();
     await candidateMatches(connectData.query);
   },
+  async "email-import"(form,f) {
+    const file=f.get("emailFile");
+    if(file.size>5*1024*1024) throw new Error("Размер письма превышает 5 МБ.");
+    const a=await mutate(form,"email","/hr/email-imports","POST",f);
+    toast("Почтовый отклик готов к проверке.");
+    await go(listDetail("/hr/applications/"+enc(a.applicationId)));
+  },
+  async "related-review"(form,f) {
+    await mutate(form,"related","/hr/applications/"+enc(appDetailData.a.applicationId)+"/related-reviews","POST",{vacancyId:f.get("vacancyId")});
+    await go(currentPage());
+  },
+  async handoff(form,f) {
+    await mutate(form,"handoff","/hr/applications/"+enc(appDetailData.a.applicationId)+"/handoff","POST",
+      {assigneeId:f.get("assigneeId"),dueAt:f.get("dueAt")+":00+03:00",note:f.get("note"),previewDigest:form.dataset.preview});
+    await go(currentPage());
+  },
+  async "interview-answer"(form,f) {
+    await mutate(form,"interview-note","/hr/applications/"+enc(appDetailData.a.applicationId)+"/interview-notes","POST",
+      {criterionId:form.dataset.criterion||null,question:f.get("question"),text:f.get("text"),nextStep:f.get("nextStep")});
+    toast("Ответ записан.");
+    await go(currentPage());
+  },
+  async "handoff-response"(form,f) {
+    await mutate(form,"handoff-response","/department/handoffs/"+enc(form.dataset.id)+"/response","POST",Object.fromEntries(f));
+    await go(currentPage());
+  },
+  async requisition(form,f) {
+    const id=form.dataset.id;
+    await mutate(form,"requisition","/department/requisitions"+(id?"/"+enc(id):""),id?"PUT":"POST",Object.fromEntries(f));
+    toast("Черновик заявки сохранён.");
+    await go(currentPage());
+  },
+  async "vacancy-changes"(form,f) {
+    await mutate(form,"vacancy-changes",location.pathname+"/request_changes","POST",{draftNumber:Number(form.dataset.draft),note:f.get("note")});
+    await go(currentPage());
+  },
   async "import-application"(form) {
     const a=await mutate(form,"application","/hr/applications","POST",applicationForm(form,"import"));
     toast("Отклик сохранён.");
-    await go("/hr/applications/"+enc(a.applicationId));
+    await go(listDetail("/hr/applications/"+enc(a.applicationId)));
+  },
+  async "import-files"(form,f) {
+    const files=[...form.elements.resumeFiles.files];
+    if(!files.length||files.length>20)throw new Error("Выберите от 1 до 20 файлов.");
+    const statuses=[...form.querySelectorAll("[data-file-status]")];
+    let saved=0;
+    for(const [index,file] of files.entries()){
+      const status=statuses[index];
+      if(status.dataset.done==="1"){saved++;continue;}
+      status.textContent="Загружаем…";
+      const body=new FormData();
+      body.set("vacancyId",f.get("vacancyId"));
+      body.set("fullName",f.get("file_name_"+index));
+      body.set("resumeFile",file);
+      body.set("fileIntake","on");
+      try{
+        if(file.size>5*1024*1024)throw new Error("Файл больше 5 МБ.");
+        const response=await mutate(form,"file_"+index,"/hr/applications","POST",body);
+        status.innerHTML=link(listDetail("/hr/applications/"+enc(response.applicationId)),"Открыть отклик","quiet btn-sm");
+        status.dataset.done="1";
+        saved++;
+      }catch(error){status.textContent=error.message;}
+    }
+    form.querySelector("[data-file-summary]").textContent=`В очереди ${saved} из ${files.length} откликов.`;
+    if(saved===files.length)form.querySelector('button[type="submit"]').hidden=true;
   },
   async "import-archive"(form,f) {
     const file=f.get("archive");
@@ -855,10 +1164,20 @@ const submitHandlers = {
     try { data=JSON.parse(await file.text()); } catch { throw Object.assign(new Error("Не удалось прочитать JSON. Проверьте формат файла."),{fields:[{field:"archive"}]}); }
     const items=Array.isArray(data)?data:data?.items;
     if(!Array.isArray(items)||!items.length||items.length>20)throw new Error("В архиве должно быть от 1 до 20 откликов.");
-    const r=await mutate(form,"archive","/hr/application-imports","POST",{vacancyId:f.get("vacancyId"),items});
+    const r=await mutate(form,"archive","/hr/application-imports","POST",{vacancyId:f.get("vacancyId"),sourceChannel:f.get("sourceChannel"),sourceAccount:f.get("sourceAccount"),items});
     form.querySelector("[data-import-result]").innerHTML=`<div class="note stack-sm"><strong>Принято ${number(r.accepted.length)} из ${number(items.length)}</strong>
+      ${r.duplicates.map(x=>`<p>Строка ${x.index+1}. ${link("/hr/applications/"+enc(x.applicationId),"Уже принята","quiet btn-sm")}</p>`).join("")}
       ${r.errors.map(x=>`<p>Строка ${x.index+1}. ${esc(x.message)}</p>`).join("")}${link("/hr/applications","Открыть отклики","secondary btn-sm")}</div>`;
     form.querySelector('button[type="submit"]').hidden=true;
+  },
+  async "archive-document"(form,f) {
+    const events=[...form.querySelectorAll("[data-archive-event]")].map(row=>Object.fromEntries([...row.querySelectorAll("[data-event]")].map(input=>[input.dataset.event,input.value])));
+    f.set("candidateId",form.dataset.id);
+    f.set("events",JSON.stringify(events));
+    if(!f.get("resumeFile")?.size)f.delete("resumeFile");
+    const result=await mutate(form,"document","/hr/archive-documents","POST",f);
+    toast(result.duplicate?"Документ уже есть в истории.":"Архивный документ добавлен.");
+    await go(currentPage());
   },
   async "public-application"(form) {
     const data=await mutate(form,"public","/public/applications","POST",applicationForm(form,"public"));
@@ -885,7 +1204,7 @@ const submitHandlers = {
   async transition(form,f) {
     const a=appDetailData.a;
     const scheduled = f.get("scheduledAt");
-    await mutate(form,"transition","/hr/applications/"+enc(a.applicationId)+"/transitions","POST",{action:form.dataset.stageAction,expectedVersion:a.stage.version,reason:f.get("reason")||"",...(scheduled?{scheduledAt:scheduled+":00+03:00"}:{})});
+    await mutate(form,"transition","/hr/applications/"+enc(a.applicationId)+"/transitions","POST",{action:form.dataset.stageAction,expectedVersion:a.stage.version,reason:f.get("reason")||"",candidateMessage:f.get("candidateMessage"),format:f.get("format"),interviewResult:f.get("interviewResult"),...(scheduled?{scheduledAt:scheduled+":00+03:00"}:{})});
     toast("Этап отклика обновлён.");
     await go(location.pathname+location.search);
   },
@@ -912,7 +1231,7 @@ const submitHandlers = {
     if(r.surveyInvitationId)letterDialog(await getJSON("/hr/survey-invitations/"+enc(r.surveyInvitationId)));
   },
   async survey(form,f) {
-    const answers=Array.from(f,([questionId,value])=>({questionId,value:questionId==="comment"?String(value):Number(value)}));
+    const answers=Array.from(f,([questionId,value])=>({questionId,value:["clarity","communication"].includes(questionId)?Number(value):String(value)}));
     await mutate(form,"survey","/public/surveys/"+enc(form.dataset.token)+"/responses","POST",{answers});
     submission=form.dataset.token;
     await render();
@@ -943,13 +1262,23 @@ const clickActions = {
     else control?.focus();
   },
   "close-dialog"() {modal.close();},
-  async "demo-login"() {
-    await api("/auth/login",{method:"POST",body:{user:"demo"}});
+  async "demo-login"(target) {
+    await api("/auth/login",{method:"POST",body:{user:target.dataset.user||"demo"}});
     await render();
   },
   async logout(){
     await api("/auth/logout",{method:"POST",body:{}});
+    actor=null;
     await go("/vacancies");
+  },
+  "new-requisition"(){ requisitionDialog(); },
+  async "edit-requisition"(target){
+    requisitionDialog(await getJSON("/department/requisitions/"+enc(target.dataset.id)));
+  },
+  async "submit-requisition"(target){
+    await api("/department/requisitions/"+enc(target.dataset.id)+"/submit",{method:"POST",body:{},key:target.dataset.key||=crypto.randomUUID()});
+    toast("Заявка передана кадровику.");
+    await go(currentPage());
   },
   "add-part"(target){
     const form=target.closest("form");
@@ -970,6 +1299,99 @@ const clickActions = {
   },
   "import-application"(){return importModal(false);},
   "import-archive"(){return importModal(true);},
+  "intake-options"(){
+    showDialog("Импорт откликов",`<div class="stack" aria-label="Источник импорта">
+      ${btn("Пакет DOCX или TXT",'data-action="import-files"',"secondary","upload")}
+      ${btn("Выгрузка JSON",'data-action="import-archive"',"secondary","file")}
+      ${btn("Письмо EML",'data-action="import-email"',"secondary","mail")}</div>`);
+  },
+  async "import-files"(){
+    const current=new URLSearchParams(location.search).get("vacancyId")||"";
+    const menu=await vacancyMenu(current,true);
+    showDialog("Пакет резюме",`<form class="stack" data-form="import-files">
+      ${vacancySelect(menu,current,false)}
+      ${input("resumeFiles","Файлы резюме",{type:"file",required:true,attrs:'accept=".docx,.txt" multiple',hint:"До 20 файлов. Каждый файл до 5 МБ."})}
+      <div class="stack-sm" data-file-list></div><p class="small" data-file-summary aria-live="polite"></p>
+      ${errors}<div>${submit("Добавить в очередь","upload")}</div>
+    </form>`);
+  },
+  async "import-email"(){
+    const selected=new URLSearchParams(location.search).get("vacancyId")||"";
+    const menu=await vacancyMenu(selected,true);
+    showDialog("Загрузить письмо",`<form class="stack" data-form="email-import">
+      ${vacancySelect(menu,selected,false)}
+      ${input("sourceAccount","Почтовый ящик",{required:true,max:160})}
+      ${input("emailFile","Письмо EML",{type:"file",required:true,attrs:'accept=".eml,message/rfc822"'})}
+      ${input("fullName","Фамилия и имя (если отличаются от отправителя)",{max:160,optional:true})}
+      ${errors}<div>${submit("Принять отклик","upload")}</div></form>`);
+  },
+  async "related-review"(){
+    const menu=await vacancyMenu("",true);
+    menu.items=menu.items.filter(v=>v.vacancyId!==appDetailData.a.vacancyId);
+    showDialog("Проверить смежную вакансию",`<form class="stack" data-form="related-review">${vacancySelect(menu,"",false)}${errors}<div>${submit("Проверить")}</div></form>`);
+  },
+  async handoff(){
+    const preview=await getJSON("/hr/applications/"+enc(appDetailData.a.applicationId)+"/handoff-preview");
+    const hash=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify(preview)));
+    const digest=Array.from(new Uint8Array(hash),byte=>byte.toString(16).padStart(2,"0")).join("");
+    showDialog("Передать карточку",`<form class="stack" data-form="handoff" data-preview="${digest}">
+      <section class="criterion stack-sm"><h3>Что увидит подразделение</h3>${handoffBrief(preview)}</section>
+      ${input("assigneeId","Логин или ID ответственного",{required:true,max:160,value:demoAvailable?"department":""})}
+      ${input("dueAt","Ответить до (МСК)",{type:"datetime-local",required:true})}
+      ${input("note","Комментарий",{type:"textarea",optional:true,max:1200})}${errors}<div>${submit("Передать")}</div></form>`);
+  },
+  "interview-answer"(target){
+    const question=target.closest("[data-plan-question]").querySelector("[data-plan-text]").value.trim();
+    showDialog("Ответ со слов кандидата",`<form class="stack" data-form="interview-answer" data-criterion="${esc(target.dataset.criterion)}">
+      ${input("question","Вопрос",{value:question,max:300,required:true})}
+      ${input("text","Ответ",{type:"textarea",max:2000,required:true})}
+      ${input("nextStep","Следующий шаг",{type:"textarea",max:1200,optional:true,placeholder:"Например, запросить реквизиты диплома"})}
+      ${errors}<div>${submit("Записать ответ","check")}</div></form>`);
+  },
+  async "vacancy-approval"(target){
+    const mode=target.dataset.mode;
+    const draftNumber=Number(target.closest("[data-draft-number]").dataset.draftNumber);
+    if(mode==="request_changes"){
+      showDialog("Вернуть черновик",`<form class="stack" data-form="vacancy-changes" data-draft="${draftNumber}">${input("note","Что нужно изменить",{type:"textarea",required:true,max:1200})}${errors}<div>${submit("Вернуть")}</div></form>`);
+      return;
+    }
+    await api(location.pathname+"/"+mode,{method:"POST",body:{draftNumber}});
+    await go(currentPage());
+  },
+  "print-report"(){window.print();},
+  "save-filters"(target) {
+    localStorage.setItem("kadry-filters",JSON.stringify(Object.fromEntries(new FormData(target.closest("form")))));
+    toast("Фильтры сохранены в этом браузере.");
+    return render();
+  },
+  "restore-filters"(){return go(pagePath("/hr/applications",listSettings("kadry-filters",{})));},
+  "archive-event"(target) {
+    const list=target.closest("form").querySelector("[data-archive-events]");
+    if(list.children.length>=20)return;
+    const id=crypto.randomUUID();
+    list.insertAdjacentHTML("beforeend",`<div class="criterion stack-sm" data-archive-event>
+      ${pair(input("","Должность",{id:id+"_position",required:true,max:150,attrs:'data-event="position"'}),input("","Дата",{id:id+"_date",type:"date",attrs:'data-event="date"'}))}
+      ${pair(input("","Вид",{id:id+"_type",content:choose("",[["","Не указан"],...Object.entries(archiveTypes)],"",`id="${id}_type" data-event="type"`)}),
+        input("","Итог",{id:id+"_outcome",content:choose("",[["","Не указан"],...Object.entries(archiveOutcomes)],"",`id="${id}_outcome" data-event="outcome"`)}))}
+      ${input("","Событие",{id:id+"_note",required:true,max:1200,attrs:'data-event="note"'})}
+      ${input("","Фрагмент документа",{id:id+"_excerpt",max:500,optional:true,attrs:'data-event="excerpt"'})}
+      <div>${btn("Убрать событие",'data-action="remove-archive-event"',"quiet")}</div></div>`);
+    list.lastElementChild.querySelector("input").focus();
+  },
+  "remove-archive-event"(target){target.closest("[data-archive-event]").remove();},
+  "archive-document"(target) {
+    showDialog("Исторический документ",`<form class="stack" data-form="archive-document" data-id="${esc(target.dataset.id)}">
+    ${input("title","Название документа",{required:true,max:180})}
+    ${pair(input("sourceAccount","Папка или реестр",{required:true,max:160}),input("deliveryId","Номер документа",{optional:true,max:250}))}
+    ${input("resumeFile","Исходный документ",{type:"file",attrs:'accept=".docx,.txt,.pdf"',optional:true})}
+    ${input("text","Текст документа",{type:"textarea",max:20000,hint:"Вставьте текст или приложите файл."})}
+    ${input("education","Образование из документа",{max:500,optional:true})}
+    ${input("additionalEducation","Доп. образование из документа",{max:500,optional:true})}
+    <h3>Прежние события</h3><div class="stack-sm" data-archive-events></div>
+    <div>${btn("Добавить событие",'data-action="archive-event"',"secondary","plus")}</div>
+    ${check("confirmDuplicate","Подтверждаю повтор после сверки с историей")}
+    ${errors}<div>${submit("Сохранить документ","check")}</div></form>`);
+  },
   "new-candidate"(){showDialog("Новый профиль",candidateForm());},
   "new-linked-candidate"(){showDialog("Новый профиль",candidateForm(appDetailData.a));},
   "candidate-link"(){return candidateLinkModal();},
@@ -986,44 +1408,73 @@ const clickActions = {
     ${selectField("status","Вывод HR",Object.entries(statusNames).map(([k,[v]])=>[k,v]),item.hrOverride?.status||item.status)}
     ${input("reason","Основание",{type:"textarea",required:true,max:1200,value:item.hrOverride?.reason})}${errors}<div>${submit("Сохранить","check")}</div></form>`);
   },
-  async "interview-draft"(target){
-    const id=appDetailData.a.applicationId;
+  async "copy-interview-plan"(target) {
+    const panel=target.closest("[data-interview-plan]");
+    const questions=[...panel.querySelectorAll("[data-plan-selected]:checked")].map(box=>box.closest("[data-plan-question]").querySelector("[data-plan-text]").value.trim()).filter(Boolean);
+    if(!questions.length) throw new Error("Выберите хотя бы один вопрос.");
+    await navigator.clipboard.writeText(questions.map((question,i)=>`${i+1}. ${question}`).join("\n"));
+    toast("Вопросы скопированы.");
+  },
+  async "refine-interview-plan"(target) {
+    const panel=target.closest("[data-interview-plan]");
+    const status=panel.querySelector("[data-plan-status]");
+    const rows=[...panel.querySelectorAll("[data-current-questions] [data-plan-question]")];
     target.disabled=true;
-    target.setAttribute("aria-busy","true");
+    status.hidden=false;
+    status.textContent="Готовим формулировки…";
     try {
-      const draft=await api("/hr/applications/"+enc(id)+"/interview-draft",{method:"POST",body:{},key:target.dataset.key||=crypto.randomUUID()});
+      const draft=await api("/hr/applications/"+enc(appDetailData.a.applicationId)+"/interview-draft",{
+        method:"POST",body:{priorityOnly:true},key:target.dataset.key||=crypto.randomUUID()
+      });
       delete target.dataset.key;
-      if(!target.isConnected)return;
-      target.disabled=false;
-      target.focus({preventScroll:true});
-      const source=draft.source==="local"?"Показаны вопросы из настроек вакансии.":`Черновик подготовлен с ${draft.source==="gigachat"?"GigaChat":"YandexGPT"}. Проверьте формулировки перед интервью.`;
-      showDialog("Вопросы для интервью",`<div class="stack"><p class="note">${source}</p>
-        ${draft.questions.map(({label,question})=>`<article class="criterion"><h3>${esc(label)}</h3><p>${esc(question)}</p></article>`).join("")}</div>`);
-    } finally {
-      target.disabled=false;
-      target.removeAttribute("aria-busy");
-    }
+      if(!panel.isConnected) return;
+      const revised=new Map(draft.questions.filter(question=>question.source==="model").map(question=>[question.criterionId,question.question]));
+      let changed=0;
+      for(const row of rows){
+        const text=row.querySelector("[data-plan-text]");
+        const question=revised.get(row.dataset.planQuestion);
+        if(!question||text.value!==text.defaultValue)continue;
+        text.defaultValue=question;
+        text.value=question;
+        changed++;
+      }
+      status.textContent=changed ? "Предложены новые формулировки. Проверьте их перед интервью."
+        : revised.size ? "Ваши правки сохранены." : "Доступны локальные вопросы.";
+    } catch (error) {
+      status.textContent="Доступны локальные вопросы.";
+      throw error;
+    } finally { target.disabled=false; }
+  },
+  async "save-interview-role"(target) {
+    await api("/hr/applications/"+enc(appDetailData.a.applicationId)+"/related-reviews",{
+      method:"POST",body:{vacancyId:target.dataset.vacancy},key:target.dataset.key||=crypto.randomUUID()
+    });
+    target.disabled=true;
+    target.parentElement.querySelector("[data-related-status]").textContent='Проверка добавлена во вкладку "Взаимодействие".';
   },
   async evidence(target){
     const {a}=appDetailData;
     const id=target.dataset.id;
     if(target.dataset.type==="test"){
       const answer=a.answers.find(x=>x.questionId===id);
-      showDialog("Ответ на вопрос теста",`<div class="stack"><h3>${esc(answer?.question)}</h3><div class="resume">${known(answer?.value)}</div></div>`);
+      showDialog("Ответ на вопрос теста",`<div class="stack"><h3>${esc(answer?.question)}</h3>${evidenceText(answer?.value,target)}</div>`);
       return;
     }
     if(target.dataset.type==="resume"){
-      showDialog("Исходное резюме",sourceCard(a));
+      showDialog("Исходное резюме",sourceCard(a,target));
       return;
     }
     const source=await getJSON("/hr/resume-sources/"+enc(id));
-    showDialog("Ответ кандидата",`<div class="resume">${known(source.text)}</div>`);
+    showDialog("Ответ кандидата",evidenceText(source.text,target));
   },
   transition(target){
     const action=target.dataset.stageAction;
     showDialog(actions[action],`<form class="stack" data-form="transition" data-stage-action="${esc(action)}">
-    ${action==="invite_interview"?input("scheduledAt","Дата и время интервью (МСК)",{type:"datetime-local",required:true}):""}
-    ${input("reason","Комментарий к этапу",{type:"textarea",max:1200,optional:true})}${errors}<div>${submit(actions[action],"check")}</div></form>`);
+    ${["invite_interview","schedule_followup"].includes(action)?pair(input("scheduledAt","Дата и время интервью (МСК)",{type:"datetime-local",required:true}),selectField("format","Вид интервью",Object.entries(interviewFormats),"phone")):""}
+    ${action==="complete_interview"?selectField("interviewResult","Результат интервью",Object.entries(handoffOutcomes),"proceed"):""}
+    ${input("reason",action==="reject"?"Внутренняя причина отказа":"Комментарий к этапу",{type:"textarea",max:1200,required:action==="reject",optional:action!=="reject"})}
+    ${["reject","hire"].includes(action)?input("candidateMessage","Сообщение соискателю",{type:"textarea",max:1200,optional:true,hint:"Отображается в его статусе отклика."}):""}
+    ${errors}<div>${submit(actions[action],"check")}</div></form>`);
   },
   "clarify-link"(target){
     showDialog("Подготовить ссылку",`<form class="stack" data-form="clarify-link" data-id="${esc(target.dataset.id)}">
@@ -1051,9 +1502,9 @@ const clickActions = {
     const d=dayInput.format(new Date());
     const emp=appDetailData.employment;
     showDialog("Зафиксировать увольнение",`<form class="stack" data-form="termination" data-id="${esc(target.dataset.id)}">
-    ${input("effectiveAt","Дата увольнения",{type:"date",value:d,required:true,attrs:`max="${d}" min="${esc(emp.startedAt.slice(0,10))}"`})}
+    ${input("effectiveAt","Дата увольнения",{type:"date",value:d,required:true,attrs:`max="${d}" min="${esc(dayInput.format(new Date(emp.startedAt)))}"`})}
     ${selectField("reasonCategory","Основание",Object.entries(departureReasons),"employer_initiated")}
-    <p class="note">При увольнении по инициативе работодателя будет подготовлена добровольная анкета для бывшего сотрудника.</p>
+    <p class="note">При добровольном уходе или увольнении по инициативе работодателя будет подготовлена анкета для бывшего сотрудника.</p>
     ${errors}<div>${submit("Зафиксировать","check")}</div></form>`);
   }
 };
@@ -1076,7 +1527,7 @@ document.addEventListener("click",async e=>{
     return;
   }
   const row=e.target.closest("tr[data-href]");
-  if(row&&!e.target.closest("button,a,input,label")&&e.button===0)await go(row.dataset.href);
+  if(row&&!e.target.closest("button,a,input,label,details")&&e.button===0)await go(row.dataset.href);
 });
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape"&&document.querySelector(".rail.open"))clickActions.menu();
@@ -1092,8 +1543,21 @@ document.addEventListener("input",e=>{
 });
 document.addEventListener("change",async e=>{
   const select=e.target;
+  if(select.name==="resumeFiles"&&select.form?.dataset.form==="import-files"){
+    const form=select.form;
+    const files=[...select.files];
+    select.setCustomValidity(files.length>20?"Выберите не больше 20 файлов.":"");
+    form.querySelector("[data-file-list]").innerHTML=files.length<=20?files.map((file,index)=>`<div class="criterion stack-sm">
+      <strong class="small">${esc(file.name)}</strong>
+      ${input("file_name_"+index,"Фамилия и имя",{required:true,max:160,value:file.name.replace(/\.[^.]+$/u,"").replaceAll("_"," ").slice(0,160)})}
+      <p class="muted small" data-file-status aria-live="polite"></p></div>`).join(""):"";
+    form.querySelector("[data-file-summary]").textContent="";
+    form.querySelector('button[type="submit"]').hidden=false;
+    return;
+  }
+  if(select.matches?.(".select-wrap select"))syncSelectDisplay(select);
   if(!select.matches?.("[data-vacancy-cursor]"))return;
-  if(select.value!=="__more"){select.dataset.value=select.value;return;}
+  if(select.value!=="__more"){select.dataset.value=select.value;syncPriorityFilter();return;}
   select.value=select.dataset.value||"";
   const cursor=select.dataset.vacancyCursor;
   if(!cursor)return;
@@ -1109,6 +1573,16 @@ document.addEventListener("change",async e=>{
     if(page.nextCursor)select.add(new Option("Загрузить ещё вакансии…","__more"));
     toast("Список вакансий обновлён.");
   }catch(error){toast(error.message,true);}
-  finally{select.disabled=false;select.focus();}
+  finally{select.disabled=false;syncSelectDisplay(select);select.focus();}
 });
+function requisitionDialog(draft={}) {
+  showDialog("Заявка на подбор",`<form class="stack" data-form="requisition" data-id="${esc(draft.id)}">
+    ${input("title","Должность",{max:150,required:true,value:draft.title})}
+    ${input("department","Подразделение",{max:140,required:true,value:actor.department||draft.department,attrs:actor.department?"readonly":""})}
+    ${input("description","Задачи и ожидаемый результат",{type:"textarea",max:12000,required:true,value:draft.description})}
+    ${errors}<div>${submit("Сохранить черновик","check")}</div></form>`);
+}
+function syncSelectDisplay(select) {
+  select.parentElement.querySelector(".select-display > span").textContent=select.selectedOptions[0]?.textContent||"";
+}
 render();
