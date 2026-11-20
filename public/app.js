@@ -937,6 +937,7 @@ const clickActions = {
       delete target.dataset.key;
       if(!target.isConnected)return;
       target.disabled=false;
+      target.focus({preventScroll:true});
       const source=draft.source==="yandexgpt"?"Черновик подготовлен с YandexGPT. Проверьте формулировки перед интервью.":"Показаны вопросы из настроек вакансии.";
       showDialog("Вопросы для интервью",`<div class="stack"><p class="note">${source}</p>
         ${draft.questions.map(({label,question})=>`<article class="criterion"><h3>${esc(label)}</h3><p>${esc(question)}</p></article>`).join("")}</div>`);
