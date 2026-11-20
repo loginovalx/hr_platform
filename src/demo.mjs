@@ -24,11 +24,19 @@ const demoVacancies = [
   },
   {
     title: "Консультант сектора подбора кадров", slug: "hr-sector-consultant", department: "Департамент кадровой политики",
-    description: "Учебная вакансия по материалам кейса. Готовьте справки по кандидатам и сопровождайте подбор. Минимальный стаж не установлен (п. 2.1.2). Образование проверяется по документам.",
+    description: "Учебная вакансия по материалам кейса. Готовьте справки по кандидатам и сопровождайте подбор. Минимальный стаж не установлен (п. 2.1.2).\n\nПункт 2.2.1 - высшее образование по юриспруденции или государственному и муниципальному управлению либо другое высшее образование вместе с профессиональной переподготовкой по одному из этих направлений. Образование проверяется по документам.",
     criteria: [
       { id: "req_sector_education", label: "Профильное высшее образование или высшее и профильная профпереподготовка", code: "education",
         keywords: ["юриспруденция", "государственное и муниципальное управление", "профессиональная переподготовка"],
         reference: "Должностная инструкция консультанта сектора, п. 2.2.1" },
+      { id:"req_sector_selection", label:"Подбор и оценка кандидатов", code:"custom",
+        keywords:["подбор кандидатов","оценка кандидатов","первичные интервью","к собеседованиям"],
+        reference:"Должностная инструкция консультанта сектора, п. 3.2",
+        question:"Расскажите о конкретном отборе. По каким требованиям вы сверяли резюме и что подготовили после интервью?" },
+      { id:"req_sector_acts", label:"Подготовка проектов муниципальных правовых актов", code:"custom",
+        keywords:["проект муниципального правового акта","проекты муниципальных правовых актов","проекты актов"],
+        reference:"Должностная инструкция консультанта сектора, п. 3.4",
+        question:"Приведите пример подготовленного проекта акта. Как вы проверяли основания и согласовывали текст?" },
       { id: "req_sector_law", label: "Знание нормативных актов о муниципальной службе, обращениях и труде", code: "custom",
         reference: "Должностная инструкция из материалов кейса: 25-ФЗ, 59-ФЗ, 99-З и ТК РФ",
         question: "Как вы проверите применимые нормы 25-ФЗ, 59-ФЗ, 99-З и ТК РФ в рабочей ситуации?" }
@@ -50,13 +58,17 @@ const demoPeople = [
 ];
 const demoAge = [0,0,0,1,1,2,2,2,2,3,4,4,4,5,5,5,5,6,9,14,0];
 async function ensureData(ctx) {
-  if (await get(ctx, "system", "secret", false)) return;
+  const existingSecret = await get(ctx, "system", "secret", false);
+  const demoEnabled = ctx.env.SEED_DEMO !== false && ctx.env.SEED_DEMO !== "0";
+  if (existingSecret && (!demoEnabled || !await get(ctx, "application", "app_demo_1", false)
+    || await get(ctx, "vacancy", "vacancy_4", false) || await get(ctx, "slug", "hr-sector-consultant", false))) return;
   const entries = [];
   const add = (kind, value) => { entries.push([kind, value]); return value; };
-  const secret = randomSecret();
-  add("system", make({ value: secret }, "", isoNow(), "secret"));
-  if (ctx.env.SEED_DEMO !== false && ctx.env.SEED_DEMO !== "0") {
+  const secret = existingSecret?.value || randomSecret();
+  if (!existingSecret) add("system", make({ value: secret }, "", isoNow(), "secret"));
+  if (demoEnabled) {
     const vList = demoVacancies.map((item, i) => {
+      if (existingSecret && i !== 3) return null;
       const draft = validateVacancy(item);
       const v = make({ draft, slug: draft.slug, publishedVersionId: null, createdAt: inDays(-10 - i) }, "", inDays(-i - 2), "vacancy_" + (i + 1));
       const version = newVersion(v);
@@ -68,7 +80,9 @@ async function ensureData(ctx) {
     });
     let firstCandidate;
     for (const [i, [fullName, vIndex, currentStage, outcome, sourceChannel]] of demoPeople.entries()) {
-      const { v, version } = vList[vIndex];
+      const seeded = vList[vIndex];
+      if (!seeded) continue;
+      const { v, version } = seeded;
       const at = new Date(Date.now() - (demoAge[i] * 86400 + i * 180) * 1000).toISOString();
       const traceTimestamp = (step) => new Date(Date.parse(at) + step * 7000).toISOString();
       const email = ["m.sokolova", "a.kuznetsov", "elena.m", "i.volkov", "a.petrova", "o.smirnov", "maria.sokolova"][i] || `candidate${i + 1}`;
@@ -80,6 +94,7 @@ async function ensureData(ctx) {
         experience: vIndex === 0 ? "Анализ данных и подготовка отчётности" : vIndex === 1 ? "Проектная работа" : "Работа с документами",
         factsSource: { type: "resume", applicationId: id, at }
       }, "", at, "candidate_demo_" + (i + 1)));
+      Object.assign(person, { educationSearch: lowered(person.education), additionalEducationSearch: "", experienceSearch: lowered(person.experience) });
       if (i === 0) firstCandidate = person;
       const resume = vIndex === 0
         ? "Опыт\nДелал SQL-запросы для отчётности городского сервиса.\nСобирал метрики и воронку по пользовательским сценариям.\n" + (i % 2 ? "Автоматизировал выгрузки на Python." : "Работал с данными в команде из трёх человек.")
@@ -98,7 +113,10 @@ async function ensureData(ctx) {
         candidateId: i === 14 ? firstCandidate.id : outcome || [2, 6, 9, 11, 20].includes(i) ? person.id : null,
         assessmentStatus: "not_analyzed", clarificationThreadId: null, stage: s
       }, v.id, at, id);
+      const items = version.criteria.map(criterion => scoreCriterion(criterion, initialSources(app, source)));
+      app.assessmentStatus = "ready";
       add("application", app);
+      add("assessment", make({ provider:"local", scoringVersion:currentScoringVersion, assessmentStatus: "ready", criteriaVersionId: app.criteriaVersionId, items, assessedAt: traceTimestamp(1) }, id, at, id));
       const states = stageOrder.slice(0, stageOrder.indexOf(currentStage) + 1);
       states.forEach((stage, j) => add("stage_event", make({
         fromStage: states[j - 1] || null, toStage: stage, outcome: null, action: ["receive", "start_review", "invite_interview", "move_to_decision"][j],
@@ -138,5 +156,8 @@ async function ensureData(ctx) {
       ...slice.flatMap(([kind, value]) => [kind, value.id, value.scope, value.sort, packed(value)])));
   }
   try { await ctx.env.DB.batch(statements); }
-  catch (error) { if (!await get(ctx, "system", "secret", false)) throw error; }
+  catch (error) {
+    const completed = existingSecret ? await get(ctx, "slug", "hr-sector-consultant", false) : await get(ctx, "system", "secret", false);
+    if (!completed) throw error;
+  }
 }

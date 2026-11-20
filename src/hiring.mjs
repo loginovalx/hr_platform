@@ -9,7 +9,7 @@ function getActions(a) {
   const s = a.stage;
   if (s.outcome) return [];
   const action = s.currentStage === "interview" && s.interviewCompletedAt ? "move_to_decision" : stageActions[s.currentStage];
-  return [action, "reject"];
+  return [action, ...(action === "move_to_decision" ? ["schedule_followup"] : []), "reject"];
 }
 const viewStage = a => ({ ...a.stage, transitions: getActions(a) });
 async function transition(ctx, app) {
@@ -17,23 +17,30 @@ async function transition(ctx, app) {
   const s = { ...app.stage };
   if (!Number.isInteger(expectedVersion) || expectedVersion !== s.version) conflict();
   if (!getActions(app).includes(action)) fail(409, "invalid_transition", "На текущем этапе действие недоступно.");
-  const reason = field(ctx.body.reason, "reason", limits.notes);
+  const reason = field(ctx.body.reason, "reason", limits.notes, action === "reject");
+  const candidateMessage = ["reject","hire"].includes(action)
+    ? field(ctx.body.candidateMessage,"candidateMessage",limits.notes) : "";
   const previous = s.currentStage;
   const at = isoNow();
   const statements = [...expect(ctx, "application", app)];
   if (action === "start_review") s.currentStage = "review";
-  if (action === "invite_interview") {
+  if (action === "invite_interview" || action === "schedule_followup") {
     s.currentStage = "interview";
+    s.interviewCompletedAt = null;
+    const format = ctx.body.format || null;
+    if (format && !["phone","onsite"].includes(format)) invalid("format","invalid_format","Выберите вид интервью.");
     const scheduledAt = dateValue(ctx.body.scheduledAt, "scheduledAt");
     if (scheduledAt && scheduledAt <= at) invalid("scheduledAt", "past_interview", "Выберите время интервью в будущем.");
-    const interview = make({ applicationId: app.id, scheduledAt, completedAt: null, invitationId: null }, app.id, at);
+    const interview = make({ applicationId: app.id, format, scheduledAt, completedAt: null, result: null, invitationId: null }, app.id, at);
     s.interviewId = interview.id;
     statements.push(put(ctx, "interview", interview));
   }
   if (action === "complete_interview") {
     const interview = await get(ctx, "interview", s.interviewId);
+    const outcome = ctx.body.interviewResult || null;
+    if (outcome && !["proceed","clarify","decline"].includes(outcome)) invalid("interviewResult","invalid_outcome","Выберите результат интервью.");
     s.interviewCompletedAt = at;
-    statements.push(...expect(ctx, "interview", interview), update(ctx, "interview", { ...interview, completedAt: at }));
+    statements.push(...expect(ctx, "interview", interview), update(ctx, "interview", { ...interview, completedAt: at, result: outcome, notes: reason }));
   }
   if (action === "move_to_decision") s.currentStage = "decision";
   if (action === "reject") {
@@ -52,12 +59,15 @@ async function transition(ctx, app) {
     s.employmentId = employment.id;
     statements.push(put(ctx, "employment", employment));
   }
+  if (candidateMessage) s.candidateMessage=candidateMessage;
   s.version++;
   const meta = { applicationId: app.id, fromStage: previous, toStage: s.currentStage, action, outcome: s.outcome, actorId: ctx.actor.id, actorName: ctx.actor.name, occurredAt: at, reason };
   const changed = event(ctx, "application.stage_changed", meta);
   statements.push(update(ctx, "application", { ...app, candidateId, stage: s }), put(ctx, "stage_event", make(meta, app.id, at, changed.id)), changed.stmt);
   return commit(ctx, statements, result({ stage: s.currentStage, outcome: s.outcome, eventId: changed.id, employmentId: s.employmentId }, 200, { process: changed.id }));
 }
+const voluntaryReasons = { new_job:"Другая работа", workload:"Нагрузка или условия работы", growth:"Профессиональное развитие", personal:"Личные обстоятельства", other:"Другая причина", undisclosed:"Предпочитаю не отвечать" };
+const isExitSurvey = type => type === "exit_feedback" || type === "voluntary_exit";
 const questionnaires = {
   interview_feedback: [
     { id: "clarity", text: "Насколько понятным был процесс интервью?", type: "rating", required: true },
@@ -67,9 +77,13 @@ const questionnaires = {
     { id: "clarity", text: "Насколько понятно вам объяснили решение?", type: "rating", required: true },
     { id: "communication", text: "Как вы оцениваете коммуникацию в процессе увольнения?", type: "rating", required: true },
     { id: "comment", text: "Что можно улучшить?", type: "text", required: false }
+  ],
+  voluntary_exit: [
+    { id:"reason", text:"Какова основная причина вашего ухода?", type:"choice", options:voluntaryReasons, required:true },
+    { id:"comment", text:"Что могло бы улучшить условия работы?", type:"text", required:false }
   ]
 };
-const surveyTitles = { interview_feedback: "Обратная связь после интервью", exit_feedback: "Обратная связь после увольнения" };
+const surveyTitles = { voluntary_exit:"Причины добровольного ухода", interview_feedback: "Обратная связь после интервью", exit_feedback: "Обратная связь после увольнения" };
 async function invitation(ctx, type, app, sourceId, email, name = app.fullName) {
   const id = uuid();
   return make({
@@ -84,7 +98,7 @@ function inviteSummary(inv) {
   return { invitationId: inv.id, type: inv.type, status, expiresAt: inv.expiresAt, sentAt: inv.sentAt, fullName: inv.fullName, vacancyTitle: inv.vacancyTitle, applicationId: inv.applicationId };
 }
 async function inviteView(ctx, inv) {
-  if (inv.type === "exit_feedback") requireExit(ctx);
+  if (isExitSurvey(inv.type)) requireExit(ctx);
   const response = inv.responseId ? await get(ctx, "survey_response", inv.responseId) : null;
   const link = invitationLive(inv) ? `${ctx.url.origin}/surveys/${inv.id}.${await token(ctx, "survey", inv.id)}` : null;
   return {
@@ -106,7 +120,7 @@ async function createInterviewInvitation(ctx, id) {
 }
 async function markSent(ctx, id) {
   const inv = await get(ctx, "invitation", id);
-  if (inv.type === "exit_feedback") requireExit(ctx);
+  if (isExitSurvey(inv.type)) requireExit(ctx);
   if (inv.sentAt) return commit(ctx, [], result({}, 200, { invitationId: inv.id }));
   if (inv.status === "no_contact" || (!inv.responseId && inv.expiresAt <= isoNow())) fail(409, "cannot_send", "Активная ссылка недоступна.");
   const updated = { ...inv, status: inv.responseId ? "answered" : "sent", sentAt: isoNow(), sentBy: ctx.actor.id };
@@ -125,8 +139,9 @@ async function terminate(ctx, id) {
   const termination = make({ employmentId: emp.id, effectiveAt, reasonCategory, actorId: ctx.actor.id, invitationId: null }, emp.id);
   const statements = [...expect(ctx, "employment", emp)];
   let survey = null;
-  if (reasonCategory === "employer_initiated") {
-    survey = await invitation(ctx, "exit_feedback", app, termination.id, person.contact || app.contact, person.fullName);
+  if (["employer_initiated","voluntary"].includes(reasonCategory)) {
+    const type = reasonCategory === "voluntary" ? "voluntary_exit" : "exit_feedback";
+    survey = await invitation(ctx, type, app, termination.id, person.contact || app.contact, person.fullName);
     termination.invitationId = survey.id;
     statements.push(put(ctx, "invitation", survey));
   }
@@ -137,10 +152,12 @@ async function terminate(ctx, id) {
 async function publicSurvey(ctx, supplied) {
   if (!/^[a-f0-9-]{36}\.[a-f0-9]{64}$/.test(supplied)) gone();
   const inv = await get(ctx, "invitation", supplied.split(".")[0], false);
-  if (!inv || !invitationLive(inv) || inv.tokenHash !== await sha(supplied.split(".")[1])) gone();
+  if (!inv || inv.expiresAt<=isoNow() || inv.tokenHash !== await sha(supplied.split(".")[1])) gone();
+  if (ctx.req.method==="GET" && inv.responseId) return result({submitted:true});
+  if (!invitationLive(inv)) gone();
   if (ctx.req.method === "GET") return result({
     type: inv.type, title: surveyTitles[inv.type], questions: questionnaires[inv.type],
-    audience: inv.type === "exit_feedback" ? "Ответы увидят сотрудники HR с доступом к анкетам после увольнения." : "Ответы увидит кадровая команда, которая проводит подбор."
+    audience: isExitSurvey(inv.type) ? "Ответы увидят сотрудники HR с доступом к анкетам после увольнения." : "Ответы увидит кадровая команда, которая проводит подбор."
   });
   const submitted = new Map();
   for (const a of collection(ctx.body.answers, "answers", 3)) {
@@ -149,6 +166,9 @@ async function publicSurvey(ctx, supplied) {
     if (question.type === "rating") {
       if (!Number.isInteger(a.value) || a.value < 1 || a.value > 5) invalid(question.id, "invalid_rating", "Выберите оценку от 1 до 5.");
       submitted.set(question.id, a.value);
+    } else if (question.type === "choice") {
+      if (typeof a.value !== "string" || !Object.hasOwn(question.options,a.value)) invalid(question.id,"invalid_choice","Выберите причину из списка.");
+      submitted.set(question.id,a.value);
     } else {
       submitted.set(question.id, field(a.value, question.id, limits.notes));
     }
@@ -172,6 +192,7 @@ async function publicSurvey(ctx, supplied) {
 async function clarificationLink(ctx, threadId) {
   const thread = await get(ctx, "thread", threadId);
   const app = await get(ctx, "application", thread.applicationId);
+  if (app.stage.outcome) fail(409,"selection_finished","Подбор по этому отклику завершён.");
   if (ctx.body.contactVerified !== true || !(app.contact || (app.candidateId && (await get(ctx, "candidate", app.candidateId)).contact))) {
     invalid("contactVerified", "verification_required", "Подтвердите проверку контактного email.");
   }
@@ -204,6 +225,11 @@ async function canUseThread(ctx, thread) {
 async function publicClarification(ctx, id) {
   const thread = await get(ctx, "thread", id);
   await canUseThread(ctx, thread);
+  const app = await get(ctx,"application",thread.applicationId);
+  if (app.stage.outcome) {
+    if(ctx.req.method!=="GET") fail(409,"selection_finished","Подбор по этому отклику завершён.");
+    return result({threadId:id,closed:true,questions:[]});
+  }
   if (ctx.req.method === "GET") return result({ threadId: id, questions: thread.questions.map(({ questionId, text, status, answer }) => ({ questionId, text, status, answer })) });
   const sourceAnswers = new Map();
   for (const a of collection(ctx.body.answers, "answers", 8)) {
@@ -217,12 +243,11 @@ async function publicClarification(ctx, id) {
   const questions = thread.questions.map(q => {
     if (!sourceAnswers.has(q.questionId)) return q;
     const answer = sourceAnswers.get(q.questionId);
-    const source = make({ type: "clarification", text: answer, questionId: q.questionId }, thread.applicationId);
+    const source = make({ type: "clarification", text: answer, searchText:lowered(answer), questionId: q.questionId, criterionId:q.criterionId }, thread.applicationId);
     changed.push(put(ctx, "source", source));
     return { ...q, status: "answered", answer, answerId: source.id };
   });
   const answered = event(ctx, "clarification.answered", { applicationId: thread.applicationId, threadId: thread.id });
-  const app = await get(ctx, "application", thread.applicationId);
   changed.push(...expect(ctx, "application", app), update(ctx, "application", { ...app, assessmentStatus: "pending", analysisIssue: null }),
     update(ctx, "thread", { ...thread, questions }), answered.stmt);
   return commit(ctx, changed, result({ accepted: true }, 202, { process: answered.id }));
@@ -240,15 +265,13 @@ function periodFilter(ctx, fromField = "from", toField = "to") {
 }
 async function analytics(ctx) {
   const { vacancyId, from, to } = periodFilter(ctx);
-  const conditions = ["kind='application'"];
-  const args = [];
-  if (vacancyId) { conditions.push("scope=?"); args.push(vacancyId); }
-  if (from) { conditions.push("sort >= ?"); args.push(periodStart(from)); }
-  if (to) { conditions.push("sort <= ?"); args.push(periodEnd(to)); }
+  const cohort = applicationCohort(ctx,{vacancyId,from,to});
+  const {where,args}=cohort;
+  const operations=await operationsAnalytics(ctx,cohort);
   const counts = await all(ctx, `SELECT json_extract(data,'$.stage.currentStage') stage,
     json_extract(data,'$.stage.outcome') outcome, COUNT(*) total
-    FROM records WHERE ${conditions.join(" AND ")} GROUP BY stage,outcome`, ...args);
-  const reached = await all(ctx, `WITH cohort AS (SELECT id FROM records WHERE ${conditions.join(" AND ")})
+    FROM records WHERE ${where} GROUP BY stage,outcome`, ...args);
+  const reached = await all(ctx, `WITH cohort AS (SELECT id FROM records WHERE ${where})
     SELECT json_extract(e.data,'$.toStage') stage, COUNT(DISTINCT e.scope) total
     FROM cohort c JOIN records e ON e.kind='stage_event' AND e.scope=c.id
     GROUP BY stage`, ...args);
@@ -268,6 +291,7 @@ async function analytics(ctx) {
     ? periodFilter(ctx, "surveyFrom", "surveyTo") : { from, to };
   const dates = [];
   const dateArgs = [];
+  vacancyScope(ctx, "json_extract(i.data,'$.vacancyId')", dates, dateArgs);
   if (vacancyId) { dates.push("json_extract(i.data,'$.vacancyId')=?"); dateArgs.push(vacancyId); }
   if (surveyPeriod.from) { dates.push("json_extract(i.data,'$.sentAt')>=?"); dateArgs.push(periodStart(surveyPeriod.from)); }
   if (surveyPeriod.to) { dates.push("json_extract(i.data,'$.sentAt')<=?"); dateArgs.push(periodEnd(surveyPeriod.to)); }
@@ -278,6 +302,14 @@ async function analytics(ctx) {
       AVG(CASE WHEN i.scope='exit_feedback' THEN json_extract(r.data,'$.answers[1].value') END) communication
       FROM records i LEFT JOIN records r ON r.kind='survey_response' AND r.id=json_extract(i.data,'$.responseId')
       WHERE i.kind='invitation' AND i.scope=? AND json_extract(i.data,'$.sentAt') IS NOT NULL${dates.length ? " AND " + dates.join(" AND ") : ""}`, type, ...dateArgs).first();
+    if (type === "voluntary_exit") {
+      const reasons = await all(ctx,`SELECT json_extract(r.data,'$.answers[0].value') category, COUNT(*) total
+        FROM records i JOIN records r ON r.kind='survey_response' AND r.id=json_extract(i.data,'$.responseId')
+        WHERE i.kind='invitation' AND i.scope=? AND json_extract(i.data,'$.sentAt') IS NOT NULL${dates.length ? " AND " + dates.join(" AND ") : ""}
+        GROUP BY category ORDER BY total DESC,category`,type,...dateArgs);
+      surveys.push({ type, sent:metrics.sent, answered:metrics.answered, averages:{}, reasons });
+      continue;
+    }
     const averages = { clarity: metrics.clarity == null ? null : Number(metrics.clarity.toFixed(2)) };
     if (type === "exit_feedback") averages.communication = metrics.communication == null ? null : Number(metrics.communication.toFixed(2));
     surveys.push({ type, sent: metrics.sent, answered: metrics.answered, averages });
@@ -286,7 +318,7 @@ async function analytics(ctx) {
   const recentFrom = new Date(Date.parse(finish) - 6 * 86400000).toISOString().slice(0, 10);
   const start = from || recentFrom;
   const ts = await all(ctx, `SELECT date(sort,'+3 hours') day,COUNT(*) total FROM records
-    WHERE ${conditions.join(" AND ")} AND sort>=? GROUP BY day ORDER BY day LIMIT 31`, ...args, periodStart(start));
+    WHERE ${where} AND sort>=? GROUP BY day ORDER BY day LIMIT 31`, ...args, periodStart(start));
   const series = [];
   for (let date = new Date(start), n = 0; day(date.toISOString()) <= finish && n < 31; date.setUTCDate(date.getUTCDate() + 1), n++) {
     const key = day(date.toISOString());
@@ -309,5 +341,5 @@ async function analytics(ctx) {
       WHERE ${scope.join(" AND ")} GROUP BY month,department,category
       ORDER BY month DESC,total DESC,department,category`, ...values);
   }
-  return result({ totals, funnel, surveys, series, ...(departures ? { departures } : {}) });
+  return result({ totals, funnel, surveys, series, operations, canUseGigaChat:Boolean(ctx.env.GIGACHAT_AUTH_KEY?.trim()), ...(departures ? { departures } : {}) });
 }

@@ -9,7 +9,7 @@ const inDays = (days) => new Date(Date.now() + days * 86400000).toISOString();
 const hex = (bytes) => Array.from(new Uint8Array(bytes), x => x.toString(16).padStart(2, "0")).join("");
 const sha = async (value) => hex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? textEncoder.encode(value) : value));
 const randomSecret = () => hex(crypto.getRandomValues(new Uint8Array(32)));
-const lowered = value => value.toLowerCase().replaceAll("ё", "е");
+const lowered = value => value.normalize("NFC").toLowerCase().replaceAll("ё", "е");
 const fullDate = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}.*)?$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value.slice(0, 10)).toISOString().slice(0, 10) === value.slice(0, 10);
 const day = (value) => fullDate(value) ? value.slice(0, 10) : null;
 const safePath = (value) => typeof value === "string" && /^[\w-]{1,140}$/.test(value);
@@ -59,9 +59,34 @@ function packed(value) {
 const prep = (ctx, sql, ...args) => ctx.env.DB.prepare(sql).bind(...args);
 const get = async (ctx, kind, id, must = true) => {
   const row = decodeRow(await prep(ctx, "SELECT * FROM records WHERE kind = ? AND id = ?", kind, id).first());
+  if (row && !await staffCanRead(ctx, kind, row)) denied();
   if (!row && must) missing();
   return row;
 };
+function vacancyScope(ctx, expression, conditions, params) {
+  if (!ctx.actor?.vacancyIds) return;
+  conditions.push(`${expression} IN (SELECT value FROM json_each(?))`);
+  params.push(JSON.stringify(ctx.actor.vacancyIds));
+}
+async function staffCanRead(ctx, kind, record) {
+  const ids = ctx.actor?.vacancyIds;
+  if (!ids) return true;
+  if (kind === "vacancy") return ids.includes(record.id);
+  if (kind === "version" || kind === "application") return ids.includes(record.scope);
+  if (kind === "candidate") {
+    if (record.ownerId === ctx.actor.id) return true;
+    const conditions = ["kind='application'", "json_extract(data,'$.candidateId')=?"];
+    const params = [record.id];
+    vacancyScope(ctx, "scope", conditions, params);
+    return Boolean(await prep(ctx,`SELECT 1 FROM records WHERE ${conditions.join(" AND ")} LIMIT 1`, ...params).first());
+  }
+  const appId = ["source","thread","interview","employment","assessment"].includes(kind) ? record.scope
+    : kind === "invitation" ? record.applicationId : null;
+  if (kind === "receipt" || kind === "archive_document") return false;
+  if (!appId) return true;
+  const app = await prep(ctx,"SELECT scope FROM records WHERE kind='application' AND id=?",appId).first();
+  return Boolean(app && ids.includes(app.scope));
+}
 const all = async (ctx, sql, ...args) => (await prep(ctx, sql, ...args).all()).results;
 const rows = async (ctx, sql, ...args) => (await all(ctx, sql, ...args)).map(decodeRow);
 const make = (data, scope = "", sort = isoNow(), id = uuid()) => ({ ...data, id, scope, sort });
@@ -87,8 +112,9 @@ function pageOptions(url) {
   return { limit: requested && /^\d{1,3}$/.test(requested) ? Math.max(1, Math.min(50, Number(requested))) : pageSize, after };
 }
 async function page(ctx, kind, conditions = [], params = [], opts = pageOptions(ctx.url)) {
-  const where = ["kind = ?", ...conditions];
-  const args = [kind, ...params];
+  const kinds = [kind].flat();
+  const where = [`kind IN (${kinds.map(() => "?").join(",")})`, ...conditions];
+  const args = [...kinds, ...params];
   if (opts.after) {
     where.push(`(sort ${opts.ascending ? ">" : "<"} ? OR (sort = ? AND id > ?))`);
     args.push(opts.after.sort, opts.after.sort, opts.after.id);
@@ -111,12 +137,25 @@ async function signature(secret, kind, id) {
   return hex(await crypto.subtle.sign("HMAC", key, textEncoder.encode(`${kind}:${id}`)));
 }
 const token = async (ctx, kind, id) => signature((await get(ctx, "system", "secret")).value, kind, id);
+function hostedStaff(ctx,id) {
+  try {
+    const assignments=JSON.parse(ctx.env.STAFF_ACCESS_JSON || "{}");
+    return assignments && Object.hasOwn(assignments,id) ? assignments[id] : null;
+  } catch { return null; }
+}
 async function auth(ctx) {
   if (ctx.env.TRUST_PLATFORM === true || ctx.env.TRUST_PLATFORM === "1") {
-    const owner = ctx.req.headers.get("oai-authenticated-user-id");
-    if (owner && (!ctx.env.OWNER_ID || owner === ctx.env.OWNER_ID)) {
-      return { id: owner, role: "admin", name: "Кабинет HR", hosted: true };
+    const id = ctx.req.headers.get("oai-authenticated-user-id");
+    if (!id) return null;
+    if (id === ctx.env.OWNER_ID) return { id, role:"admin", name:"Руководитель HR", hosted:true };
+    const assigned = hostedStaff(ctx,id);
+    if (assigned?.role === "admin") return { id, role:"admin", name:"Руководитель HR", hosted:true };
+    if (assigned?.role === "department") return { id, role:"department", name:"Представитель подразделения",
+      department:typeof assigned.department==="string"?assigned.department:null, hosted:true };
+    if (assigned?.role === "hr" && Array.isArray(assigned.vacancyIds) && assigned.vacancyIds.length && assigned.vacancyIds.every(safePath)) {
+      return { id, role:"hr", name:"Специалист HR", vacancyIds:assigned.vacancyIds, hosted:true };
     }
+    return null;
   }
   const val = ctx.cookies.kadry_hr;
   if (!val || !/^[a-f0-9-]{36}\.[a-f0-9]{64}$/.test(val)) return null;
@@ -131,8 +170,12 @@ async function visitor(ctx) {
   const [id, code] = value.split(".");
   return code === await token(ctx, "visitor", id) ? id : null;
 }
-const requireHr = ctx => { if (!ctx.actor) fail(401, "unauthorized", "Войдите в кабинет HR."); };
+const requireHr = ctx => {
+  if (!ctx.actor) fail(401, "unauthorized", "Войдите в кабинет HR.");
+  if (!["hr","admin"].includes(ctx.actor.role)) denied();
+};
 const requireExit = ctx => { requireHr(ctx); if (ctx.actor.role !== "admin") denied(); };
+const syntheticOnly = env => [env.TRUST_PLATFORM,env.DEMO_MODE,env.SYNTHETIC_ONLY].some(value=>value===true || value==="1");
 function sameOrigin(ctx) {
   const origin = ctx.req.headers.get("origin");
   if (origin && origin !== ctx.url.origin) denied();
@@ -174,14 +217,15 @@ async function readBody(req) {
         body[key] = value;
         parts.push([key, value]);
       } else {
-        if (key !== "resumeFile" || value.size > MAX_FILE) fail(413, "file_too_large", "Допустимый размер файла резюме — до 5 МБ.");
+        if (!["resumeFile","emailFile"].includes(key) || value.size > MAX_FILE) fail(413, "file_too_large", "Допустимый размер файла - до 5 МБ.");
         body[key] = value;
         parts.push([key, value.name, await sha(await value.arrayBuffer())]);
       }
     }
-    if (typeof body.answers === "string") {
-      try { body.answers = JSON.parse(body.answers); }
-      catch { invalid("answers", "invalid_list", "Не удалось прочитать ответы."); }
+    for (const key of ["answers","events"]) {
+      if (typeof body[key] !== "string") continue;
+      try { body[key] = JSON.parse(body[key]); }
+      catch { invalid(key,"invalid_list","Не удалось прочитать список."); }
     }
     return { body, digest: await sha(JSON.stringify(parts.sort(([a], [b]) => a.localeCompare(b)))) };
   }
