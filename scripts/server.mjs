@@ -42,6 +42,10 @@ export async function localRuntime(options = {}) {
     ADMIN_PASSWORD: options.adminPassword ?? process.env.ADMIN_PASSWORD,
     HR_PASSWORD: options.hrPassword ?? process.env.HR_PASSWORD,
     SEED_DEMO: options.seed ?? process.env.SEED_DEMO,
+    YANDEX_FOLDER_ID: options.yandex?.folderId ?? process.env.YANDEX_FOLDER_ID,
+    YANDEX_API_KEY: options.yandex?.apiKey ?? process.env.YANDEX_API_KEY,
+    YANDEX_MODEL: options.yandex?.model ?? process.env.YANDEX_MODEL,
+    YANDEX_FETCH: options.yandex?.fetch,
     DB: {
       prepare: (sql) => new Statement(sql),
       async batch(statements) {

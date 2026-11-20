@@ -149,6 +149,8 @@ const navItems = [
   ["/hr","Обзор","grid"], ["/hr/vacancies","Вакансии","brief"], ["/hr/applications","Отклики","inbox"],
   ["/hr/candidates","Кандидаты","users"], ["/hr/analytics","Аналитика","bars"], ["/hr/feedback","Обратная связь","feedback"]
 ];
+const mainNav = navItems.slice(1, 4);
+const extraNav = [navItems[0], ...navItems.slice(4), ["/vacancies","Публичные вакансии","globe"]];
 function navItem([href,label,icon], active) {
   return `<a class="nav-item" href="${href}" data-link ${active ? 'aria-current="page"' : ""}>${ic(icon)}${esc(label)}</a>`;
 }
@@ -159,10 +161,10 @@ function hrShell(content) {
   return `<div class="shell">
     <aside class="rail" id="rail" aria-label="Боковая панель"><div class="rail-brand">${brand()}</div>
       <nav class="nav-body" aria-label="Кабинет HR">
-        <div class="nav-group"><div class="nav-title">Подбор</div>${navItems.slice(0, 4).map(item).join("")}</div>
-        <div class="nav-group"><div class="nav-title">Результаты</div>${navItems.slice(4).map(item).join("")}</div>
+        <div class="nav-group">${mainNav.map(item).join("")}</div>
+        <details class="nav-extra"><summary class="nav-item">Дополнительно ${ic("down")}</summary>
+          <div class="nav-group">${extraNav.map(item).join("")}</div></details>
       </nav>
-      <div class="rail-end">${navItem(["/vacancies","Публичные вакансии","globe"],false)}</div>
     </aside>
     <button class="mobile-scrim" aria-label="Закрыть меню" data-action="menu"></button>
     <header class="top"><div class="row">${btn("","data-action=menu aria-label=\"Открыть меню\" aria-expanded=\"false\" aria-controls=\"rail\"","quiet btn-icon mobile-menu","menu")}
@@ -423,7 +425,8 @@ async function applicationDetail(id) {
   const record={a,evaluation,person,thread,history,employment,interview};
   appDetailData=record;
   let detail="";
-  if(active==="assessment") detail=`<div class="stack">${cardHead("Разбор по критериям","Локальная проверка по источникам отклика.")}${assessmentCards(evaluation)}</div>`;
+  if(active==="assessment") detail=`<div class="stack">${cardHead("Разбор по критериям","Локальная проверка по источникам отклика.",
+    evaluation.items.length && evaluation.assessmentStatus!=="pending" ? btn("Вопросы для интервью",'data-action="interview-draft"',"secondary btn-sm","chat") : "")}${assessmentCards(evaluation)}</div>`;
   if(active==="resume") detail=`<div class="stack">${cardHead("Исходное резюме")}${sourceCard(a)}</div>`;
   if(active==="test") detail=`<div class="stack">${cardHead("Тест при отклике",a.testStatus==="not_completed"?"Тест не заполнен.":"Сохранённые вопросы и ответы.")}${a.answers.length?a.answers.map(x=>`<article class="criterion"><h3>${esc(x.question)}</h3><div class="small pre">${known(x.value)}</div></article>`).join(""):empty("Тест не прикреплён")}</div>`;
   if(active==="clarification") detail=`<div class="stack">${cardHead("Уточнения кандидату","Ответы хранятся вместе с источником отклика.")}${thread ? thread.questions.map(q=>`<article class="criterion"><div class="chat-bubble pre">${esc(q.text)}</div>
@@ -455,18 +458,18 @@ async function candidatesView() {
   const r=await getJSON("/hr/candidates"+location.search);
   const rows=r.items.map((x,i)=>{
     const url="/hr/candidates/"+enc(x.candidateId);
-    return {href:url,cells:[`<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link href="${url}" class="table-name">${esc(x.fullName)}</a></div></div>`,known(x.contact),known(x.education),known(x.experience)]};
+    return {href:url,cells:[`<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link href="${url}" class="table-name">${esc(x.fullName)}</a></div></div>`,known(x.contact),known(x.education),known(x.additionalEducation),known(x.experience)]};
   });
   return `${heading("Кандидаты","Найдите профиль по фамилии или имени и откройте историю откликов.",btn("Создать профиль",'data-action="new-candidate"',"primary","plus"))}
-  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}
+  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}${input("additionalEducation","Доп. образование",{max:160,value:p.get("additionalEducation"),placeholder:"Например, юриспруденция"})}
   <div class="row wrap" style="align-self:end">${submit("Найти","search")}${link("/hr/candidates","Сбросить","quiet")}</div></form>
-  <section class="card">${rows.length?table([["Кандидат",25],["Email",25],["Образование",25],["Опыт",25]],rows):empty("Кандидаты не найдены","Попробуйте поискать по фамилии или создайте профиль.","users")}${pagination(r.nextCursor)}</section>`;
+  <section class="card">${rows.length?table([["Кандидат",23],["Email",22],["Образование",18],["Доп. образование",19],["Опыт",18]],rows):empty("Кандидаты не найдены","Измените параметры поиска или создайте профиль.","users")}${pagination(r.nextCursor)}</section>`;
 }
 async function candidateView(id) {
   const person=await getJSON("/hr/candidates/"+enc(id)+location.search);
   const source=person.factsSource?.type==="resume"?link("/hr/applications/"+enc(person.factsSource.applicationId)+"?tab=resume","Исходное резюме","quiet btn-sm","file"):person.factsSource?.actorName?`<div class="small muted">Запись HR · ${esc(person.factsSource.actorName)} · ${esc(date(person.factsSource.at))}</div>`:"";
   return `<div>${link("/hr/candidates","Кандидаты","quiet btn-sm","users")}</div>${heading(person.fullName,person.contact||"Email не указан")}
-  <section class="card pad stack-sm"><h2>Профиль кандидата</h2>${meta([["Образование",known(person.education)],["Опыт",known(person.experience)]])}${source}</section>
+  <section class="card pad stack-sm"><h2>Профиль кандидата</h2>${meta([["Образование",known(person.education)],["Доп. образование",known(person.additionalEducation)],["Опыт",known(person.experience)]])}${source}</section>
   <section class="card"><div class="table-title"><h2>История откликов</h2></div>${applicationTable(person.applications,true)}${pagination(person.nextCursor)}</section>`;
 }
 function surveySummary(cards) {
@@ -475,6 +478,12 @@ function surveySummary(cards) {
     if(x.type==="exit_feedback") names.push(["Средняя оценка коммуникации",x.averages.communication==null?"—":number(x.averages.communication)+" / 5"]);
     return `<section class="card pad stack-sm">${cardHead(typeLabels[x.type],"",tile("feedback"))}${meta(names)}</section>`;
   }).join("")}</div>`;
+}
+const departureReasons={employer_initiated:"По инициативе работодателя",voluntary:"По инициативе сотрудника",agreement:"По соглашению сторон",other:"Другое"};
+function departureSummary(rows) {
+  const entries=rows.map(x=>({cells:[esc(x.department),esc(x.month),esc(departureReasons[x.category]||departureReasons.other),number(x.total)]}));
+  return `<section class="card"><div class="table-title"><h2>Увольнения по подразделениям</h2></div>
+    ${entries.length ? table([["Подразделение",32],["Месяц",16],["Основание",39],["Ушли",13]],entries) : empty("Увольнений за период нет")}</section>`;
 }
 async function analyticsView() {
   const p=new URLSearchParams(location.search);
@@ -488,6 +497,7 @@ async function analyticsView() {
   <div class="dashboard-grid"><section class="card pad">${cardHead("Динамика откликов",stats.series.length===31?"Первые 31 день периода":"Отклики по дням")}${spark(stats.series)}</section>
   <section class="card pad">${cardHead("Воронка найма","Дошли до этапа",tile("funnel"))}${funnelChart(stats.funnel,stats.totals.received)}</section></div>
   <section class="card"><div class="table-title"><h2>Детализация по этапам</h2></div>${table([["Этап",30],["Дошли",23],["Сейчас на этапе",25],["Отказ",22]],data)}</section>
+  ${stats.departures ? departureSummary(stats.departures) : ""}
   <section class="stack-sm"><h2>Обратная связь</h2><p class="small muted">Период применяется к дате отправки анкеты.</p>${surveySummary(stats.surveys)}</section>`;
 }
 async function feedbackView() {
@@ -580,7 +590,7 @@ function showDialog(title, content) {
 function candidateForm(a) {
   return `<form class="stack" data-form="create-candidate" data-link-id="${esc(a?.applicationId||"")}">${errors}
   ${input("fullName","Фамилия и имя",{max:160,required:true,value:a?.fullName||""})}${input("contact","Email",{type:"email",max:254,optional:true,value:a?.contact||""})}
-  ${input("education","Образование",{max:500,optional:true})}${input("experience","Опыт",{type:"textarea",max:1000,optional:true})}
+  ${input("education","Образование",{max:500,optional:true})}${input("additionalEducation","Доп. образование",{max:500,optional:true})}${input("experience","Опыт",{type:"textarea",max:1000,optional:true})}
   <div>${submit(a?"Создать и связать":"Создать профиль","check")}</div></form>`;
 }
 async function candidateMatches(query, append = false, cursor = "") {
@@ -766,7 +776,7 @@ const submitHandlers = {
     await go(pagePath("/hr/applications",Object.fromEntries(f)));
   },
   async "candidate-filter"(form,f) {
-    await go(pagePath("/hr/candidates",{q:f.get("q")}));
+    await go(pagePath("/hr/candidates",Object.fromEntries(f)));
   },
   async "analytics-filter"(form,f) {
     if(f.get("from")&&f.get("to")&&f.get("from")>f.get("to"))throw Object.assign(new Error("Дата окончания должна быть позже даты начала."),{fields:[{field:"to"}]});
@@ -918,6 +928,24 @@ const clickActions = {
     ${selectField("status","Вывод HR",Object.entries(statusNames).map(([k,[v]])=>[k,v]),item.hrOverride?.status||item.status)}
     ${input("reason","Основание",{type:"textarea",required:true,max:1200,value:item.hrOverride?.reason})}${errors}<div>${submit("Сохранить","check")}</div></form>`);
   },
+  async "interview-draft"(target){
+    const id=appDetailData.a.applicationId;
+    target.disabled=true;
+    target.setAttribute("aria-busy","true");
+    try {
+      const draft=await api("/hr/applications/"+enc(id)+"/interview-draft",{method:"POST",body:{},key:target.dataset.key||=crypto.randomUUID()});
+      delete target.dataset.key;
+      if(!target.isConnected)return;
+      target.disabled=false;
+      target.focus({preventScroll:true});
+      const source=draft.source==="yandexgpt"?"Черновик подготовлен с YandexGPT. Проверьте формулировки перед интервью.":"Показаны вопросы из настроек вакансии.";
+      showDialog("Вопросы для интервью",`<div class="stack"><p class="note">${source}</p>
+        ${draft.questions.map(({label,question})=>`<article class="criterion"><h3>${esc(label)}</h3><p>${esc(question)}</p></article>`).join("")}</div>`);
+    } finally {
+      target.disabled=false;
+      target.removeAttribute("aria-busy");
+    }
+  },
   async evidence(target){
     const {a}=appDetailData;
     const id=target.dataset.id;
@@ -965,7 +993,7 @@ const clickActions = {
     const emp=appDetailData.employment;
     showDialog("Зафиксировать увольнение",`<form class="stack" data-form="termination" data-id="${esc(target.dataset.id)}">
     ${input("effectiveAt","Дата увольнения",{type:"date",value:d,required:true,attrs:`max="${d}" min="${esc(emp.startedAt.slice(0,10))}"`})}
-    ${selectField("reasonCategory","Основание",[["employer_initiated","По инициативе работодателя"],["voluntary","По инициативе сотрудника"],["agreement","По соглашению сторон"],["other","Другое"]],"employer_initiated")}
+    ${selectField("reasonCategory","Основание",Object.entries(departureReasons),"employer_initiated")}
     <p class="note">При увольнении по инициативе работодателя будет подготовлена добровольная анкета для бывшего сотрудника.</p>
     ${errors}<div>${submit("Зафиксировать","check")}</div></form>`);
   }

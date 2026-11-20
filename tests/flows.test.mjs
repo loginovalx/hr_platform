@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openServer } from "../scripts/server.mjs";
 
-async function fixture(t, seed = "0") {
+async function fixture(t, seed = "0", options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "kadry-test-"));
-  const server = await openServer({ port:0, seed, directory, adminPassword:"test-admin-password", hrPassword:"test-hr-password" });
+  const server = await openServer({ port:0, seed, directory, adminPassword:"test-admin-password", hrPassword:"test-hr-password", ...options });
   t.after(async () => { await server.close(); await rm(directory,{recursive:true,force:true}); });
   const client = () => {
     const jar = new Map();
@@ -41,6 +41,45 @@ async function publish(hr, body = draft) {
 }
 const stage = (hr,id,action,expectedVersion,expected=200,key) => hr("/hr/applications/"+id+"/transitions",post({action,expectedVersion},expected,key));
 const today = () => new Date().toISOString().slice(0,10);
+
+test("interview draft is HR-only and sends only structured facts to YandexGPT", async t => {
+  let calls = 0;
+  const {hr,client} = await fixture(t, "0", { yandex: {
+    folderId:"test-folder", apiKey:"test-key",
+    fetch:async (url, init) => {
+      calls++;
+      assert.equal(url,"https://llm.api.cloud.yandex.net/foundationModels/v1/completion");
+      assert.equal(init.headers.Authorization,"Api-Key test-key");
+      const body=JSON.parse(init.body);
+      assert.equal(body.modelUri,"gpt://test-folder/yandexgpt-lite");
+      assert.doesNotMatch(init.body,/Секретная метка|sample@example.test|req_sql|Знание SQL/);
+      assert.match(body.messages[1].text,/"requirementCode":"sql"/);
+      if (calls === 2) return Response.json({}, {status:503});
+      return Response.json({result:{alternatives:[{message:{text:JSON.stringify({questions:[
+        {criterionKey:"c1",question:"Как вы проверяли корректность SQL-запросов?"},
+        {criterionKey:"other",question:"Лишний результат"}
+      ]})}}]}});
+    }
+  }});
+  const vacancy=await publish(hr);
+  const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Секретная метка",contact:"sample@example.test",resumeText:"SQL. Секретная метка."},201));
+  const path="/hr/applications/"+app.applicationId;
+  const original=await hr(path+"/assessment");
+  await client()(path+"/interview-draft",post({},401));
+  const key=crypto.randomUUID();
+  const first=await hr(path+"/interview-draft",post({},200,key));
+  assert.equal(first.source,"yandexgpt");
+  assert.equal(first.questions[0].criterionId,"req_sql");
+  assert.match(first.questions[0].question,/корректность/);
+  assert.equal(first.questions[1].question,"Расскажите о Python.");
+  assert.equal(first.questions.length,2);
+  assert.deepEqual(await hr(path+"/interview-draft",post({},200,key)),first);
+  assert.equal(calls,1);
+  const fallback=await hr(path+"/interview-draft",post({}));
+  assert.equal(fallback.source,"local");
+  assert.deepEqual(await hr(path+"/assessment"),original);
+  assert.equal(calls,2);
+});
 
 test("guest application, versioned test, linked candidate, all hiring stages and two independent surveys", async t=>{
   const {client,hr}=await fixture(t);
@@ -85,9 +124,12 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   assert.equal((await guest("/public/applications",post(payload,409))).code,"vacancy_version_changed");
   assert.equal((await hr(appUrl)).answers[0].question,"Опишите проект");
 
-  const candidate=await hr("/hr/candidates",post({fullName:"Мария Соколова",contact:"first@example.com",education:"Первый профиль"},201));
+  const candidate=await hr("/hr/candidates",post({fullName:"Мария Соколова",contact:"first@example.com",education:"Филология",additionalEducation:"Юриспруденция"},201));
   await hr("/hr/candidates",post({fullName:"Мария Соколова",contact:"second@example.com",education:"Второй профиль"},201));
   assert.equal((await hr("/hr/candidates?q="+encodeURIComponent("Соколова"))).items.length,2);
+  const retrained=await hr("/hr/candidates?additionalEducation="+encodeURIComponent("ЮРИСПРУДЕНЦИЯ"));
+  assert.deepEqual(retrained.items.map(x=>x.candidateId),[candidate.candidateId]);
+  assert.equal((await hr("/hr/candidates/"+candidate.candidateId)).additionalEducation,"Юриспруденция");
   await stage(hr,a.applicationId,"start_review",0);
   await stage(hr,a.applicationId,"invite_interview",0,409);
   await stage(hr,a.applicationId,"invite_interview",1);
@@ -129,7 +171,11 @@ test("guest application, versioned test, linked candidate, all hiring stages and
     ["interview_feedback",1,1,{clarity:5}],["exit_feedback",1,1,{clarity:4,communication:3}]
   ]);
   assert.equal((await hr(appUrl+"/stage")).outcome,"hired");
-  assert.equal((await regular("/hr/analytics")).surveys.length,1);
+  assert.deepEqual(stats.departures,[{department:"Департамент",month:today().slice(0,7),category:"employer_initiated",total:1}]);
+  assert.deepEqual((await hr("/hr/analytics?to=2020-01-01")).departures,[]);
+  const limited=await regular("/hr/analytics");
+  assert.equal(limited.surveys.length,1);
+  assert.equal(limited.departures,undefined);
 });
 test("archive validation and pagination, attachment limits, manual clarification, rejection stage", async t=>{
   const {client,hr}=await fixture(t);

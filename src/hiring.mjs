@@ -285,5 +285,22 @@ async function analytics(ctx) {
     const key = day(date.toISOString());
     series.push({ date: key, value: ts.find(x => x.day === key)?.total || 0 });
   }
-  return result({ totals, funnel, surveys, series });
+  let departures;
+  if (ctx.actor.role === "admin") {
+    const scope = ["t.kind='termination'"];
+    const values = [];
+    if (vacancyId) { scope.push("a.scope=?"); values.push(vacancyId); }
+    if (from) { scope.push("json_extract(t.data,'$.effectiveAt')>=?"); values.push(periodStart(from)); }
+    if (to) { scope.push("json_extract(t.data,'$.effectiveAt')<=?"); values.push(periodEnd(to)); }
+    departures = await all(ctx, `SELECT json_extract(v.data,'$.department') department,
+      strftime('%Y-%m',json_extract(t.data,'$.effectiveAt'),'+3 hours') month,
+      json_extract(t.data,'$.reasonCategory') category, COUNT(*) total
+      FROM records t
+      JOIN records e ON e.kind='employment' AND e.id=t.scope
+      JOIN records a ON a.kind='application' AND a.id=json_extract(e.data,'$.applicationId')
+      JOIN records v ON v.kind='version' AND v.id=json_extract(a.data,'$.versionId')
+      WHERE ${scope.join(" AND ")} GROUP BY month,department,category
+      ORDER BY month DESC,total DESC,department,category`, ...values);
+  }
+  return result({ totals, funnel, surveys, series, ...(departures ? { departures } : {}) });
 }
