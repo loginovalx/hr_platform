@@ -9,8 +9,6 @@ function triageQuery(conditions) {
       coalesce(json_extract(source.data,'$.readable'),length(trim(coalesce(json_extract(source.data,'$.text'),'')))>0,0) AS hasText,
       coalesce(nullif(json_extract(a.data,'$.contact'),''), nullif(json_extract(person.data,'$.contact'),'')) IS NOT NULL AS hasContact,
       EXISTS (SELECT 1 FROM json_each(a.data,'$.answers') r WHERE length(trim(coalesce(json_extract(r.value,'$.value'),'')))>0) AS hasAnswers,
-      EXISTS (SELECT 1 FROM json_each(a.data,'$.answers') r WHERE json_extract(r.value,'$.required')=1
-        AND length(trim(coalesce(json_extract(r.value,'$.value'),'')))=0) AS missingTest,
       (SELECT json_object(
         'required',count(*),
         'confirmed',coalesce(sum(overrideStatus='matched'),0),
@@ -41,7 +39,6 @@ function triageQuery(conditions) {
         WHEN NOT hasContact AND json_extract(data,'$.sourceChannel')!='archive' THEN 'missing_contact'
         WHEN json_extract(data,'$.assessmentStatus')='pending' THEN 'analysis_pending'
         WHEN json_extract(data,'$.assessmentStatus')='failed' OR assessmentId IS NULL THEN 'analysis_unavailable'
-        WHEN missingTest AND json_extract(data,'$.sourceChannel')!='archive' THEN 'test_incomplete'
         WHEN json_extract(progress,'$.required')=0 THEN 'no_required_criteria'
         WHEN json_extract(progress,'$.supported')=json_extract(progress,'$.required') THEN 'required_supported'
         ELSE 'required_need_evidence'
@@ -56,7 +53,6 @@ function triageQuery(conditions) {
       WHEN 'no_required_criteria' THEN 'manual_review'
       WHEN 'required_supported' THEN 'review_first'
       WHEN 'required_need_evidence' THEN 'clarify'
-      WHEN 'test_incomplete' THEN 'clarify'
       ELSE 'check_source'
     END AS triageStatus
     FROM reasons

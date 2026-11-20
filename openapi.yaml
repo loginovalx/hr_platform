@@ -326,6 +326,7 @@ paths:
       tags:
       - Отклики
       summary: Гостевой отклик
+      description: Для резюме передайте один источник. Файл принимается через multipart/form-data.
       operationId: post_public_applications
       responses:
         '201':
@@ -384,24 +385,6 @@ paths:
                 publishedVersionId:
                   type: string
                   maxLength: 140
-                testVersionId:
-                  type: string
-                  maxLength: 140
-                answers:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      questionId:
-                        type: string
-                        maxLength: 140
-                      value:
-                        type: string
-                        maxLength: 2000
-                    required:
-                    - questionId
-                    - value
-                  maxItems: 6
               required:
               - vacancyId
               - publishedVersionId
@@ -427,11 +410,6 @@ paths:
                 publishedVersionId:
                   type: string
                   maxLength: 140
-                testVersionId:
-                  type: string
-                  maxLength: 140
-                answers:
-                  type: string
                 resumeFile:
                   type: string
                   format: binary
@@ -4009,7 +3987,7 @@ components:
         reason:
           type: string
           enum: [finished, hr_confirmed_gap, missing_source, unreadable_attachment, missing_text, missing_contact,
-            analysis_pending, analysis_unavailable, no_required_criteria, required_supported, required_need_evidence, test_incomplete]
+            analysis_pending, analysis_unavailable, no_required_criteria, required_supported, required_need_evidence]
     Error:
       type: object
       properties:

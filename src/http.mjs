@@ -32,7 +32,7 @@ async function publicRoutes(ctx, method, p) {
     const byId = new Map(versions.map(x => [x.id, x]));
     const items = paged.items.map(v => {
       const x = byId.get(v.publishedVersionId);
-      return { vacancyId: v.id, slug: x.slug, title: x.title, department: x.department, schedule: x.schedule, location: x.location, description: x.description.slice(0, 260), hasTest: Boolean(x.testVersionId) };
+      return { vacancyId: v.id, slug: x.slug, title: x.title, department: x.department, schedule: x.schedule, location: x.location, description: x.description.slice(0, 260), hasTest: false };
     });
     return result({ items, nextCursor: paged.nextCursor });
   }
@@ -42,7 +42,7 @@ async function publicRoutes(ctx, method, p) {
     if (r.expiresAt <= isoNow() || !r.visitorId || r.visitorId !== await visitor(ctx)) denied();
     await processPending(ctx, r.applicationId);
     const app = await get(ctx, "application", r.applicationId);
-    return result({ receiptNumber: r.id, assessmentStatus: app.assessmentStatus, clarificationThreadId: app.clarificationThreadId });
+    return result({ receiptNumber: r.id, assessmentStatus: app.assessmentStatus, clarificationThreadId: null });
   }
   if (p[0] === "surveys" && ((method === "GET" && p.length === 2) || (method === "POST" && p.length === 3 && p[2] === "responses"))) return publicSurvey(ctx, p[1]);
   if (p[0] === "clarifications" && ((method === "GET" && p.length === 2) || (method === "POST" && p.length === 3 && p[2] === "answers"))) return publicClarification(ctx, p[1]);

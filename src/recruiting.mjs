@@ -43,7 +43,7 @@ function validateVacancy(body, previous = {}) {
     const keywords = collection(item.keywords ?? [], `${key}.keywords`, 12).map(value => field(value, `${key}.keywords`, 70, true));
     return { id, label, code, keywords, reference: field(item.reference, `${key}.reference`, 250), required: item.required !== false, question: field(item.question, `${key}.question`, 300) || `Расскажите подробнее, как ваш опыт связан с требованием «${label}».` };
   });
-  const testQuestions = collection(body.testQuestions ?? [], "testQuestions", 6).map((item, i) => {
+  const testQuestions = collection(body.testQuestions ?? previous.draft?.testQuestions ?? [], "testQuestions", 6).map((item, i) => {
     const key = `testQuestions.${i}`;
     return { id: listId(item, key), text: field(item.text, `${key}.text`, 400, true), required: item.required !== false };
   });
@@ -54,7 +54,7 @@ const vacancySummary = v => ({ vacancyId: v.id, slug: v.slug, title: v.draft.tit
 const publicVacancy = (v, version) => ({
   vacancyId: v.id, slug: version.slug, publishedVersionId: version.id, title: version.title,
   department: version.department, description: version.description, schedule: version.schedule, location: version.location,
-  formFields: version.formFields, testVersionId: version.testVersionId, questions: version.testQuestions
+  formFields: version.formFields, testVersionId: null, questions: []
 });
 function newVersion(v) {
   return make({ ...v.draft, vacancyId: v.id, criteriaVersionId: uuid(), testVersionId: v.draft.testQuestions.length ? uuid() : null }, v.id);
@@ -98,32 +98,18 @@ async function receive(ctx, isPublic) {
   const vacancy = await get(ctx, "vacancy", b.vacancyId);
   if (!vacancy.publishedVersionId) fail(409, "vacancy_not_published", "Сначала опубликуйте вакансию.");
   const version = await get(ctx, "version", vacancy.publishedVersionId);
-  if (isPublic && (b.publishedVersionId !== version.id || (b.testVersionId || null) !== version.testVersionId)) {
+  if (isPublic && b.publishedVersionId !== version.id) {
     fail(409, "vacancy_version_changed", "Вакансия обновилась. Откройте форму ещё раз.");
   }
   const fullName = field(b.fullName, "fullName", limits.name, true);
   const email = contact(b.contact, isPublic);
   if (isPublic && (ctx.env.TRUST_PLATFORM || ctx.env.DEMO_MODE)) {
-    if (b.demoAcknowledged !== true && b.demoAcknowledged !== "on") invalid("demoAcknowledged", "required", "Подтвердите, что используете вымышленные данные.");
     if (!/@[^@]+\.(test|example)$/i.test(email)) invalid("contact", "demo_email", "Введите вымышленный адрес, например candidate@example.test.");
   }
-  const contents = await prepareResume(ctx, isPublic ? version.formFields.find(f => f.id === "resume").required : true);
+  const contents = await prepareResume(ctx, isPublic ? version.formFields.find(f => f.id === "resume").required : true, isPublic);
   const selectedChannel = isPublic ? "public_form" : (b.sourceChannel || "manual");
   if (!channels.has(selectedChannel) || (!isPublic && selectedChannel === "public_form")) invalid("sourceChannel", "invalid_channel", "Выберите источник отклика.");
   const sourceReceivedAt = isPublic ? isoNow() : dateValue(b.sourceReceivedAt, "sourceReceivedAt");
-  const supplied = new Map();
-  if (isPublic) {
-    for (const entry of collection(b.answers ?? [], "answers", 6)) {
-      const q = version.testQuestions.find(x => x.id === entry?.questionId);
-      if (!q || supplied.has(q.id)) invalid("answers", "invalid_question", "В форме есть неизвестный или повторяющийся вопрос.");
-      supplied.set(q.id, field(entry.value, `answer_${q.id}`, limits.answer));
-    }
-  }
-  const answers = version.testQuestions.map(q => ({ questionId: q.id, question: q.text, required: q.required, value: supplied.get(q.id) || "" }));
-  if (isPublic) {
-    const errors = answers.filter(q => q.required && !q.value).map(q => ({field: `answer_${q.questionId}`, code: "required"}));
-    if (errors.length) fail(422, "validation_failed", "Ответьте на обязательные вопросы.", errors);
-  }
   const acceptedAt = isoNow();
   const receivedAt = sourceReceivedAt || acceptedAt;
   const applicationId = uuid();
@@ -134,12 +120,13 @@ async function receive(ctx, isPublic) {
     readable: /\p{L}/u.test(contents.text.replace(/\b(?:https?:\/\/|www\.)\S+/giu, "")),
     attachment: attachment && { name: attachment.name, size: attachment.size, type: attachment.type }
   }, applicationId);
+  const candidate = candidateFromApplication({ id: applicationId, fullName, contact: email, acceptedAt });
   const app = make({
     vacancyTitle: version.title, versionId: version.id, criteriaVersionId: version.criteriaVersionId,
-    testVersionId: version.testVersionId, testStatus: !answers.length ? "not_required" : isPublic && answers.some(q => q.value) ? "completed" : "not_completed",
-    answers, fullName, searchName: lowered(fullName), contact: email, sourceId: source.id, sourceChannel: selectedChannel,
+    testVersionId: null, testStatus: "not_required",
+    answers: [], fullName, searchName: lowered(fullName), contact: email, sourceId: source.id, sourceChannel: selectedChannel,
     sourceReceivedAt, importedAt: isPublic ? null : acceptedAt, receivedAt, acceptedAt,
-    candidateId: null, assessmentStatus: "pending", clarificationThreadId: null, stage: stageState()
+    candidateId: candidate.id, assessmentStatus: "pending", clarificationThreadId: null, stage: stageState()
   }, vacancy.id, receivedAt, applicationId);
   const visitorId = isPublic ? (await visitor(ctx)) || uuid() : null;
   const receipt = make({ applicationId, visitorId, expiresAt: inDays(7) }, applicationId, acceptedAt, receiptNumber);
@@ -149,7 +136,7 @@ async function receive(ctx, isPublic) {
   let response;
   try {
     response = await commit(ctx, [
-      ...expect(ctx, "vacancy", vacancy), put(ctx, "application", app), put(ctx, "source", source),
+      ...expect(ctx, "vacancy", vacancy), put(ctx, "application", app), put(ctx, "source", source), put(ctx, "candidate", candidate),
       put(ctx, "receipt", receipt), put(ctx, "stage_event", first), created.stmt
     ], result({ applicationId, receiptNumber, assessmentStatus: "pending" }, 201, { session: isPublic ? ["visitor", visitorId] : null, process: created.id }));
   } catch (error) {
@@ -288,6 +275,13 @@ async function overrideAssessment(ctx, app, criterionId) {
   }
   stmts.push(put(ctx, "override", make({ applicationId: app.id, criterionId, ...hrOverride }, app.id)));
   return commit(ctx, stmts, result({ assessmentId: a.id, criteriaVersionId: app.criteriaVersionId, assessmentStatus: app.assessmentStatus, items: revised }));
+}
+function candidateFromApplication(app) {
+  return make({
+    fullName: app.fullName, searchName: lowered(app.fullName), contact: app.contact,
+    education: "", additionalEducation: "", additionalEducationSearch: "", experience: "",
+    factsSource: { type: "resume", applicationId: app.id, at: app.acceptedAt }
+  });
 }
 function candidateSummary(person) {
   return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, additionalEducation: person.additionalEducation || "", experience: person.experience, updatedAt: person.sort };

@@ -311,3 +311,6 @@ body:has(dialog[open]){overflow:hidden}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation-duration:.01ms!important}
 }
+
+.resume-fields { margin: 0; }
+.resume-fields legend { padding: 0 4px; }

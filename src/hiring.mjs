@@ -9,7 +9,7 @@ function getActions(a) {
   const s = a.stage;
   if (s.outcome) return [];
   const action = s.currentStage === "interview" && s.interviewCompletedAt ? "move_to_decision" : stageActions[s.currentStage];
-  return action === "hire" && !a.candidateId ? ["reject"] : [action, "reject"];
+  return [action, "reject"];
 }
 const viewStage = a => ({ ...a.stage, transitions: getActions(a) });
 async function transition(ctx, app) {
@@ -40,16 +40,22 @@ async function transition(ctx, app) {
     s.outcome = "rejected";
     s.rejectedAtStage = previous;
   }
+  let candidateId = app.candidateId;
   if (action === "hire") {
     s.outcome = "hired";
-    const employment = make({ applicationId: app.id, candidateId: app.candidateId, vacancyId: app.scope, startedAt: at, status: "active", terminationId: null }, app.id, at);
+    if (!candidateId) {
+      const candidate = candidateFromApplication(app);
+      candidateId = candidate.id;
+      statements.push(put(ctx, "candidate", candidate));
+    }
+    const employment = make({ applicationId: app.id, candidateId, vacancyId: app.scope, startedAt: at, status: "active", terminationId: null }, app.id, at);
     s.employmentId = employment.id;
     statements.push(put(ctx, "employment", employment));
   }
   s.version++;
   const meta = { applicationId: app.id, fromStage: previous, toStage: s.currentStage, action, outcome: s.outcome, actorId: ctx.actor.id, actorName: ctx.actor.name, occurredAt: at, reason };
   const changed = event(ctx, "application.stage_changed", meta);
-  statements.push(update(ctx, "application", { ...app, stage: s }), put(ctx, "stage_event", make(meta, app.id, at, changed.id)), changed.stmt);
+  statements.push(update(ctx, "application", { ...app, candidateId, stage: s }), put(ctx, "stage_event", make(meta, app.id, at, changed.id)), changed.stmt);
   return commit(ctx, statements, result({ stage: s.currentStage, outcome: s.outcome, eventId: changed.id, employmentId: s.employmentId }, 200, { process: changed.id }));
 }
 const questionnaires = {
@@ -193,9 +199,6 @@ async function canUseThread(ctx, thread) {
   if (!visitorId) denied();
   const grant = await get(ctx, "clarify_grant", await sha(`${visitorId}:${thread.id}`), false);
   if (grant && grant.expiresAt > isoNow()) return;
-  const receipts = await rows(ctx, "SELECT * FROM records WHERE kind='receipt' AND scope=? LIMIT 1", thread.applicationId);
-  const r = receipts[0];
-  if (r && r.expiresAt > isoNow() && r.visitorId === visitorId) return;
   denied();
 }
 async function publicClarification(ctx, id) {

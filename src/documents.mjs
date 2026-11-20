@@ -49,13 +49,14 @@ async function docxText(bytes) {
   }
   zipError();
 }
-async function prepareResume(ctx, required) {
+async function prepareResume(ctx, required, singleSource = false) {
   const resumeText = field(ctx.body.resumeText, "resumeText", limits.resume);
   const file = ctx.body.resumeFile;
   let attachment = null;
   let extracted = "";
   let extractStatus = "not_needed";
   if (file !== undefined && !((file instanceof Blob) && typeof file.name === "string")) invalid("resumeFile", "invalid_file", "Приложите файл через форму.");
+  if (file?.size && resumeText && singleSource) invalid("resumeFile", "one_resume_source", "Выберите один способ: прикрепите файл или введите текст.");
   if (file?.size) {
     const safeName = file.name.split(/[\\/]/).at(-1).replace(/[\u0000-\u001f\u007f]/g, "").slice(-160);
     const ext = safeName.toLowerCase().split(".").at(-1);
@@ -77,6 +78,6 @@ async function prepareResume(ctx, required) {
     }
     attachment = { name: safeName, size: file.size, type: extMime[ext], bytes };
   }
-  if (required && !resumeText && !attachment) invalid("resumeText", "required", "Добавьте текст или файл резюме.");
+  if (required && !resumeText && !attachment) invalid("resume", "required", "Добавьте текст или файл резюме.");
   return { text: resumeText || extracted.slice(0, limits.resume), attachment, extractStatus };
 }
