@@ -2,6 +2,7 @@ const app = document.querySelector("#app");
 const modal = document.querySelector("#modal");
 const base = "/api/v1";
 const icons = {
+  bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12a2 2 0 0 0 4 0"/>',
   grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   brief:'<rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18m-11 0v2h4v-2"/>',
   inbox:'<path d="M5 4h14l3 9v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5l3-9z"/><path d="M2 13h6l2 3h4l2-3h6"/>',
@@ -94,6 +95,8 @@ let appDetailData = null;
 let connectData = null;
 let vacancyParts = null;
 let candidateSearchSeq = 0;
+let newsSession = null;
+const newsPollInterval = 120000;
 async function api(path, { method = "GET", body, key = crypto.randomUUID() } = {}) {
   const headers = {};
   let payload = body;
@@ -166,12 +169,17 @@ function table(headers, rows, options = {}) {
 }
 const navItems = [
   ["/hr","Обзор","grid"], ["/hr/vacancies","Вакансии","brief"], ["/hr/applications","Отклики","inbox"],
-  ["/hr/candidates","Кандидаты","users"], ["/hr/analytics","Аналитика","bars"], ["/hr/feedback","Обратная связь","feedback"]
+  ["/hr/candidates","Кандидаты","users"], ["/hr/analytics","Аналитика","bars"], ["/hr/feedback","Обратная связь","feedback"],
+  ["/hr/news","HR-новости","bell"]
 ];
 const mainNav = navItems.slice(1, 4);
 const extraNav = [navItems[0], ...navItems.slice(4), ["/vacancies","Публичные вакансии","globe"]];
 function navItem([href,label,icon], active) {
   return `<a class="nav-item" href="${href}" data-link ${active ? 'aria-current="page"' : ""}>${ic(icon)}${esc(label)}</a>`;
+}
+function newsBell() {
+  return `<a href="/hr/news" data-link data-news-bell class="btn btn-quiet btn-icon news-bell"
+    aria-label="HR-новости" ${location.pathname==="/hr/news" ? 'aria-current="page"' : ""}>${ic("bell")}<span data-news-count hidden></span></a>`;
 }
 function hrShell(content) {
   const { pathname } = location;
@@ -181,19 +189,149 @@ function hrShell(content) {
     <aside class="rail" id="rail" aria-label="Боковая панель"><div class="rail-brand">${brand()}</div>
       <nav class="nav-body" aria-label="Кабинет HR">
         <div class="nav-group">${mainNav.map(item).join("")}</div>
-        <details class="nav-extra"><summary class="nav-item">Дополнительно ${ic("down")}</summary>
+        <details class="nav-extra" ${pathname==="/hr/news" ? "open" : ""}><summary class="nav-item">Дополнительно ${ic("down")}</summary>
           <div class="nav-group">${extraNav.map(item).join("")}</div></details>
       </nav>
     </aside>
     <button class="mobile-scrim" aria-label="Закрыть меню" data-action="menu"></button>
     <header class="top"><div class="row">${btn("","data-action=menu aria-label=\"Открыть меню\" aria-expanded=\"false\" aria-controls=\"rail\"","quiet btn-icon mobile-menu","menu")}
       <span class="crumb">${esc(section[1])}</span></div>
-      <details class="profile-menu"><summary class="top-profile">${avatar(actor?.name || "Кадровая команда")}<span class="profile-text small strong">${esc(actor?.name || "Кадровая команда")}</span>${ic("down")}</summary>
+      <div class="row top-tools">${newsBell()}<details class="profile-menu"><summary class="top-profile">${avatar(actor?.name || "Кадровая команда")}<span class="profile-text small strong">${esc(actor?.name || "Кадровая команда")}</span>${ic("down")}</summary>
         <div class="drop">${actor?.hosted ? '<a class="btn btn-quiet" target="_top" href="/signout-with-chatgpt?returnTo=%2Fvacancies">Выйти из аккаунта</a>' : btn("Выйти из кабинета",'data-action="logout"',"quiet","logout")}</div>
-      </details>
+      </details></div>
     </header><main class="main" id="main"><div class="inner">${content}</div></main>
   </div>`;
 }
+const newsTopicNames = {regulation:"Трудовые правила", market:"Рынок труда", skills:"Навыки и ИИ"};
+const newsSourceNames = {mintrud:"Минтруд России", cbr:"Банк России", hse:"НИУ ВШЭ"};
+function newsView() {
+  return `<div class="stack-lg">
+    ${heading("HR-новости","Публикации о рынке труда, трудовых правилах и профессиональных навыках.")}
+    <section class="card stack news-panel" aria-label="Лента HR-новостей">
+      <div class="news-controls">
+        ${selectField("news_topic","Тема",[["","Все темы"],...Object.entries(newsTopicNames)],newsSession.topic)}
+        ${check("news_unread","Только непрочитанные",newsSession.onlyUnread)}
+        <div class="row wrap news-actions">
+          ${btn("Проверить обновления",'data-action="news-refresh"',"secondary","history")}
+          ${btn("Отметить все прочитанными",'data-action="news-read-all" hidden',"quiet","check")}
+        </div>
+      </div>
+      <div class="small muted news-status" data-news-status role="status">Проверяем источники…</div>
+      <div data-news-content></div>
+    </section>
+    <details class="card pad news-catalog" data-news-catalog>
+      <summary>Каталог источников ${ic("down")}</summary><div class="stack" data-news-sources></div>
+    </details>
+  </div>`;
+}
+function paintNewsFeed(state) {
+  const bell = app.querySelector("[data-news-bell]");
+  if (!bell) return;
+  const data = state.data;
+  const count = data?.unreadCount || 0;
+  const badge = bell.querySelector("[data-news-count]");
+  badge.hidden = !count;
+  badge.textContent = count;
+  bell.setAttribute("aria-label", count ? `HR-новости, непрочитанные публикации (${count})` : "HR-новости");
+  const status = app.querySelector("[data-news-status]");
+  if (!status) return;
+  const unavailable = data?.sources.filter(source=>source.available===false).map(source=>source.name);
+  const checked = data?.updatedAt ? `Источники проверены ${date(data.updatedAt,true)}.` : "Проверяем источники…";
+  status.textContent = state.error ? "Не удалось проверить ленту. Повторите попытку." :
+    unavailable?.length ? `${checked} Не удалось обновить ленты источников (${unavailable.join(", ")}). Сохранённые публикации доступны.` : checked;
+  const allRead = app.querySelector('[data-action="news-read-all"]');
+  allRead.hidden = !count;
+  const content = app.querySelector("[data-news-content]");
+  if (!data) return;
+  const items = data.items.filter(item=>(!state.topic || state.topic===item.topic) && (!state.onlyUnread || !item.read));
+  const focused = content.contains(document.activeElement) ? document.activeElement : null;
+  const focusId = focused?.dataset.newsId;
+  const focusAction = focused?.dataset.action;
+  const view = items.length ? table([["Публикация",53],"Тема","Дата",""],items.map(item=>({cells:[
+    `<div class="news-title">${item.read ? "" : '<span class="news-dot" title="Непрочитано" role="img" aria-label="Непрочитано"></span>'}
+      <div><a class="news-story" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" data-news-id="${esc(item.id)}">${esc(item.title)}</a>
+      <div class="small muted">${esc(newsSourceNames[item.source])}</div>
+      ${item.detail ? `<p class="small news-detail">${esc(item.detail)}</p>` : ""}</div></div>`,
+    esc(newsTopicNames[item.topic]),`<time datetime="${esc(item.publishedAt)}">${esc(date(item.publishedAt))}</time>`,
+    item.read ? `<span class="small muted">Прочитано</span>` : btn("Отметить",`data-action="news-read" data-news-id="${esc(item.id)}" aria-label="Отметить прочитанным: ${esc(item.title)}"`,"quiet","check")
+  ]}))) : empty(state.onlyUnread?"Нет непрочитанных публикаций":"По этой теме публикаций пока нет","","bell");
+  if (content.newsView === view) return;
+  content.newsView = view;
+  content.innerHTML = view;
+  if (focusId) {
+    const same = [...content.querySelectorAll("[data-news-id]")].filter(node=>node.dataset.newsId===focusId);
+    (same.find(node=>node.dataset.action===focusAction) || same[0] || app.querySelector("#field_news_unread")).focus({preventScroll:true});
+  }
+}
+function refreshNewsUi({force=false, notify=false} = {}) {
+  const state = newsSession;
+  if (!state || !/^\/hr(?:\/|$)/.test(location.pathname) || !app.querySelector("[data-news-bell]")) return;
+  if (state.pending) return state.pending;
+  if (!force && (document.hidden || Date.now()-state.checkedAt<newsPollInterval)) return;
+  state.checkedAt = Date.now();
+  state.pending = (async()=>{
+    try {
+      const feed = await getJSON("/hr/news");
+      if (newsSession!==state) return;
+      const previous = new Set(state.data?.items.map(item=>item.id));
+      const hasNew = state.data && feed.items.some(item=>!item.read && !previous.has(item.id));
+      state.data = feed;
+      state.error = false;
+      if (notify && hasNew && !document.hidden && app.querySelector("[data-news-bell]")) toast("В HR-новостях появились новые публикации.");
+    } catch {
+      state.error = true;
+    } finally {
+      state.pending = null;
+      if (newsSession===state) paintNewsFeed(state);
+    }
+  })();
+  return state.pending;
+}
+function paintNewsCatalog(state) {
+  const target = app.querySelector("[data-news-sources]");
+  if (!target || !state.catalog) return;
+  const groups = [["GOV","Официальные источники"],["ACADEMIC","Научные институты"],["RESEARCH","Опросные центры"],["MARKET","Площадки и отраслевые исследования"]];
+  target.innerHTML = `<p class="muted small">Автоматически проверяем три RSS-ленты. Остальные ссылки ведут к статистике, обзорам и методологии.</p>
+    ${groups.map(([kind,label])=>`<section><h3>${esc(label)}</h3><ul>${state.catalog.filter(item=>item.id.startsWith(`RU-${kind}-`)).map(item=>`
+      <li><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.name)}</a>
+        ${item.feed ? chip("Лента проверяется автоматически","blue") : ""}<p class="small muted">${esc(item.description)}</p></li>`).join("")}</ul></section>`).join("")}`;
+}
+async function loadNewsCatalog(state) {
+  if (state.catalogPending) return;
+  if (state.catalog) return paintNewsCatalog(state);
+  state.catalogPending = true;
+  try {
+    state.catalog = (await getJSON("/hr/news/sources")).items;
+    if (newsSession===state) paintNewsCatalog(state);
+  } catch {
+    const target = app.querySelector("[data-news-sources]");
+    if (newsSession===state && target) target.textContent = "Каталог недоступен. Сверните и снова откройте его, чтобы повторить попытку.";
+  } finally {
+    state.catalogPending = false;
+  }
+}
+async function readNewsItems(ids, button) {
+  const state = newsSession;
+  if (!ids.length || !state) return;
+  button.disabled = true;
+  try {
+    await api("/hr/news/read", {method:"POST",body:{ids}});
+    if (newsSession!==state || !state.data) return;
+    if (state.pending) await state.pending;
+    const read = new Set(ids);
+    const items = state.data.items.map(item=>read.has(item.id) ? {...item,read:true} : item);
+    state.data = {...state.data,items,unreadCount:items.filter(item=>!item.read).length};
+    paintNewsFeed(state);
+    if (!button.isConnected || button.hidden) {
+      if (button.dataset.action==="news-read-all") app.querySelector("#field_news_unread")?.focus({preventScroll:true});
+    }
+  } finally { button.disabled = false; }
+}
+setInterval(()=>refreshNewsUi({notify:true}),newsPollInterval);
+document.addEventListener("visibilitychange",()=>{ if (!document.hidden) refreshNewsUi({notify:true}); });
+document.addEventListener("toggle",event=>{
+  if (newsSession && event.target.matches?.("[data-news-catalog][open]")) loadNewsCatalog(newsSession);
+},true);
 function publicShell(content) {
   const secondary = location.pathname === "/vacancies" ? "" : link("/vacancies","Все вакансии","quiet");
   const staff = actor?.role==="department" || location.pathname==="/department"
@@ -1017,6 +1155,9 @@ async function render({focus=false}={}) {
       if(run!==navRun)return;
       actor=session.actor;
       demoAvailable=session.demoAvailable;
+      if (isHr && actor && actor.role!=="department") {
+        if (newsSession?.actorId!==actor.id) newsSession = {actorId:actor.id, checkedAt:0, topic:"", onlyUnread:false};
+      } else if (!actor || actor.role==="department") newsSession = null;
       if(path==="/")return go(actor?.role==="department"?"/department":actor?"/hr":"/vacancies",true);
       if(isHr&&actor?.role==="department")return go("/department",true);
       if (!session.authenticated) {
@@ -1034,6 +1175,7 @@ async function render({focus=false}={}) {
       else if(bits[1]==="candidates")view=bits[2]?await candidateView(bits[2]):await candidatesView();
       else if(bits[1]==="analytics")view=await analyticsView();
       else if(bits[1]==="feedback")view=await feedbackView();
+      else if(bits[1]==="news"&&!bits[2])view=newsView();
     } else {
       if(bits[0]==="vacancies")view=bits[1]?await publicVacancyView(bits[1]):await publicVacancies();
       if(bits[0]==="receipts")view=await receiptView(bits[1],run);
@@ -1047,6 +1189,10 @@ async function render({focus=false}={}) {
     document.title=(title?.textContent?title.textContent+" · ":"")+"Кадры · Горький";
     if(focus)title?.focus({preventScroll:true});
     syncPriorityFilter();
+    if (isHr) {
+      paintNewsFeed(newsSession);
+      refreshNewsUi({notify:true});
+    }
     const candidateAction=new URLSearchParams(location.search).get("candidateAction");
     if (bits[1]==="applications" && bits[2] && ["link","create"].includes(candidateAction)) {
       history.replaceState(history.state,"",pagePath(location.pathname,{candidateAction:null},true));
@@ -1343,6 +1489,16 @@ document.addEventListener("submit",async e=>{
   finally{form.dataset.busy="";buttons.forEach(b=>b.disabled=false);}
 });
 const clickActions = {
+  async "news-refresh"(button) {
+    button.disabled = true;
+    try { await refreshNewsUi({force:true}); }
+    finally { button.disabled = false; }
+  },
+  async "news-read"(button) { await readNewsItems([button.dataset.newsId],button); },
+  async "news-read-all"(button) {
+    const ids = newsSession?.data?.items.filter(item=>!item.read).map(item=>item.id) || [];
+    await readNewsItems(ids,button);
+  },
   menu(target) {
     const open=document.querySelector("#rail")?.classList.toggle("open");
     document.querySelector(".mobile-scrim")?.classList.toggle("show",!!open);
@@ -1677,6 +1833,14 @@ document.addEventListener("change",async e=>{
     return;
   }
   if(select.matches?.(".select-wrap select"))syncSelectDisplay(select);
+  if (newsSession && select.id==="field_news_topic") {
+    newsSession.topic = select.value;
+    paintNewsFeed(newsSession);
+  }
+  if (newsSession && select.id==="field_news_unread") {
+    newsSession.onlyUnread = select.checked;
+    paintNewsFeed(newsSession);
+  }
   if(!select.matches?.("[data-vacancy-cursor]"))return;
   if(select.value!=="__more"){select.dataset.value=select.value;syncPriorityFilter();return;}
   select.value=select.dataset.value||"";

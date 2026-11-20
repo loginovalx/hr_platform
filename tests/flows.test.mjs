@@ -43,6 +43,59 @@ async function publish(hr, body = draft) {
 const stage = (hr,id,action,expectedVersion,expected=200,key) => hr("/hr/applications/"+id+"/transitions",post({action,expectedVersion},expected,key));
 const today = () => new Date().toISOString().slice(0,10);
 
+test("HR news filters and shares feeds while read marks stay with each account", async t => {
+  const date = new Date().toUTCString();
+  const item = (title, link, published = date) => `<item><title>${title}</title><link>${link}</link><pubDate>${published}</pubDate></item>`;
+  let calls = 0;
+  const {server, hr, client} = await fixture(t, "0", {demo: true});
+  server.env.NEWS_FETCH = async url => {
+    calls++;
+    if (url.includes("cbr.ru")) throw new Error("source unavailable");
+    const xml = url.includes("mintrud.gov.ru") ? [
+      item("<![CDATA[Поправки к трудовому законодательству]]>", "https://mintrud.gov.ru/docs/example/?utm_medium=rss"),
+      item("Дублирующая запись о трудовом законодательстве", "https://mintrud.gov.ru/docs/example#duplicate"),
+      item("Кадровый электронный документооборот", "javascript:alert(1)"),
+      item("Кадровый электронный документооборот", "https://unrelated.example/fake"),
+      item("Изменения в пенсионной системе", "https://mintrud.gov.ru/docs/unrelated")
+    ] : [item("Спрос на навыки работы с ИИ на рынке труда", "https://issek.hse.ru/news/example.html")];
+    return new Response(`<rss><channel>${xml.join("")}</channel></rss>`);
+  };
+  await client()("/hr/news", {expected:401});
+  const department=client();
+  await department("/auth/login", post({user:"department"}));
+  await department("/hr/news", {expected:403});
+  assert.equal(calls,0);
+
+  const feed = await hr("/hr/news");
+  assert.equal(calls,3);
+  assert.deepEqual(feed.sources.map(source=>source.available), [true, false, true]);
+  const alerts = feed.items.filter(row=>row.url.includes("/example"));
+  assert.equal(alerts.length,2);
+  const regulation = alerts.find(row=>row.topic==="regulation");
+  assert.equal(regulation.title,"Поправки к трудовому законодательству");
+  assert.equal(regulation.url,"https://mintrud.gov.ru/docs/example");
+  assert.equal(alerts.find(row=>row.topic==="skills").source,"hse");
+  assert.equal(feed.items.some(row=>row.url.includes("unrelated")),false);
+  assert.equal(feed.unreadCount,feed.items.length);
+  assert.equal((await hr("/hr/news/sources")).items.length,20);
+
+  const another=client();
+  await another("/auth/login",post({user:"demo-hr"}));
+  await hr("/hr/news/read",post({ids:[regulation.id,regulation.id]}));
+  assert.equal((await hr("/hr/news")).items.find(row=>row.id===regulation.id).read,true);
+  assert.equal((await another("/hr/news")).unreadCount,feed.unreadCount);
+  await hr("/hr/news/read",post({ids:feed.items.map(row=>row.id)}));
+  assert.equal((await hr("/hr/news")).unreadCount,0);
+  assert.equal(calls,3);
+
+  await server.env.DB.prepare("UPDATE records SET sort='' WHERE kind='system' AND id='news-refresh'").bind().first();
+  server.env.NEWS_FETCH = async () => { calls++; return new Response("<html>Unavailable</html>"); };
+  const cached = await hr("/hr/news");
+  assert.equal(cached.sources.every(source=>!source.available),true);
+  assert.deepEqual(cached.items,feed.items.map(row=>({...row, read:true})));
+  assert.equal(calls,6);
+});
+
 test("delivery retries are stable across batches and archive history stays out of the funnel", async t => {
   const {hr}=await fixture(t);
   const vacancy=await publish(hr);

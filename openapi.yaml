@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Кадры · Горький
-  version: 1.4.0
+  version: 1.5.0
   description: Контракт муниципального подбора. Идентификаторы непрозрачные. Даты ISO 8601. Для PDF, DOCX и TXT до 5 МБ используйте
     multipart/form-data. В этом формате answers — JSON-строка.
 servers:
@@ -14,6 +14,7 @@ tags:
 - name: Этапы
 - name: Анкеты
 - name: Аналитика
+- name: HR-новости
 paths:
   /auth/session:
     get:
@@ -4020,6 +4021,85 @@ paths:
             schema:
               type: object
               properties: {}
+  /hr/news:
+    get:
+      tags: [HR-новости]
+      summary: Список публикаций и состояние RSS-источников
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: До 45 публикаций и персональный счётчик непрочитанных
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, unreadCount, updatedAt, sources]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/HrNewsItem'}
+                  unreadCount: {type: integer, minimum: 0}
+                  updatedAt: {type: [string, 'null'], format: date-time, description: Время последней проверки источников}
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, available]
+                      properties:
+                        id: {type: string, enum: [mintrud, cbr, hse]}
+                        name: {type: string}
+                        available: {type: [boolean, 'null'], description: Результат последней проверки или null до первой проверки}
+  /hr/news/read:
+    post:
+      tags: [HR-новости]
+      summary: Отметить публикации прочитанными для текущего аккаунта
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  maxItems: 45
+                  items: {type: string, pattern: '^[a-f0-9]{64}$'}
+      responses:
+        '200':
+          description: Число выбранных публикаций, которые присутствуют в ленте
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  marked: {type: integer, minimum: 0}
+  /hr/news/sources:
+    get:
+      tags: [HR-новости]
+      summary: Каталог источников статистики и исследований
+      security: [{staffCookie: []}]
+      responses:
+        '200':
+          description: Источники каталога и отметка о наличии RSS в приложении
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        name: {type: string}
+                        url: {type: string, format: uri}
+                        description: {type: string}
+                        feed: {type: [string, 'null'], enum: [mintrud, cbr, hse, null]}
   /hr/analytics/brief:
     post:
       summary: Выбрать до двух приоритетов по агрегатам рабочей нагрузки
@@ -4811,6 +4891,18 @@ components:
       required: true
       schema: {type: string, maxLength: 140}
   schemas:
+    HrNewsItem:
+      type: object
+      required: [id, title, url, source, topic, publishedAt, read]
+      properties:
+        id: {type: string, pattern: '^[a-f0-9]{64}$'}
+        title: {type: string}
+        detail: {type: string}
+        url: {type: string, format: uri}
+        source: {type: string, enum: [mintrud, cbr, hse]}
+        topic: {type: string, enum: [regulation, market, skills]}
+        publishedAt: {type: string, description: Дата или дата и время публикации в ISO 8601}
+        read: {type: boolean}
     OperationsAnalytics:
       type: object
       properties:

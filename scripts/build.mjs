@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const built = new URL("../dist/", import.meta.url);
 await Promise.all([mkdir(new URL("server/", built), { recursive: true }), mkdir(new URL(".openai/", built), { recursive: true })]);
-const sources = ["core", "documents", "archive", "recruiting", "triage", "gigachat", "interview-draft", "hiring", "analytics", "operations", "demo", "http"];
+const sources = ["core", "documents", "archive", "recruiting", "triage", "gigachat", "interview-draft", "hiring", "analytics", "operations", "news-catalog", "news", "demo", "http"];
 const files = { "/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/mark.svg": "mark.svg" };
 const assets = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([path, filename]) => [path, await readFile(new URL(`../public/${filename}`, import.meta.url), "utf8")])));
 for (const font of ["inter-cyrillic.woff2","inter-latin.woff2"]) {

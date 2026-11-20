@@ -8,7 +8,7 @@ const {crc32,deflateRawSync}=require('node:zlib');
 const pathname=path.resolve(__dirname,'..');
 let images;
 const candidates=['/hr/candidates','/hr/candidates/candidate_demo_21'];
-const routes=['/hr','/hr/vacancies','/hr/vacancies?view=requests','/hr/vacancies/new','/hr/vacancies/vacancy_4','/hr/applications',...['assessment','interview','resume','test','clarification','history','report','workflow'].map(s=>'/hr/applications/app_demo_21?tab='+s),...candidates,'/hr/analytics','/hr/feedback','/hr/feedback?type=voluntary_exit','/vacancies','/vacancies/hr-sector-consultant','/vacancies/hr-sector-consultant?apply=1'];
+const routes=['/hr','/hr/vacancies','/hr/vacancies?view=requests','/hr/vacancies/new','/hr/vacancies/vacancy_4','/hr/applications',...['assessment','interview','resume','test','clarification','history','report','workflow'].map(s=>'/hr/applications/app_demo_21?tab='+s),...candidates,'/hr/analytics','/hr/feedback','/hr/feedback?type=voluntary_exit','/hr/news','/vacancies','/vacancies/hr-sector-consultant','/vacancies/hr-sector-consultant?apply=1'];
 const widths=[320,390,768,1024,1440];
 const fail=[];
 const notices=[];
@@ -88,6 +88,12 @@ async function run(){
   const directory=await fs.mkdtemp(path.join(tmpdir(),'kadry-audit-db-'));
   const {openServer}=await import(pathToFileURL(pathname+'/scripts/server.mjs').href);
   const server=await openServer({port:0,directory,seed:'1',demo:true});
+  const newsTitle='Опрос о спросе на профессиональные навыки работы с искусственным интеллектом';
+  let newPublication=false;
+  server.env.NEWS_FETCH=async url=>new Response(`<rss><channel>${url.includes('hse.ru')?
+    `<item><title>${newsTitle}</title><link>https://www.hse.ru/news/test</link><pubDate>${new Date().toUTCString()}</pubDate></item>`+
+    (newPublication ? `<item><title>Новые данные о рынке труда</title><link>https://www.hse.ru/news/test-2</link><pubDate>${new Date().toUTCString()}</pubDate></item>` : '') : ''
+  }</channel></rss>`);
   const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE||undefined});
   try{
     const page=await browser.newPage();
@@ -107,8 +113,9 @@ async function run(){
       await page.setViewportSize({width,height:900});
       for(const route of routes){
         await visit(page,server.url,route);
+        if(route==='/hr/news')await page.getByRole('link',{name:newsTitle,exact:true}).waitFor();
         await measure(page,route,width);
-        if([390,1440].includes(width)&&['/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/feedback','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
+        if([390,1440].includes(width)&&['/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/feedback','/hr/news','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
           await page.screenshot({path:images+'/'+width+'-'+route.replace(/[^a-z0-9]+/gi,'_')+'.png'});
       }
       await visit(page,server.url,'/hr/applications?vacancyId=vacancy_4&priority=on');
@@ -277,7 +284,36 @@ async function run(){
         await measure(page,'long-name-and-vacancy',width);
       }
     }
-    console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:8,images},null,2));
+    await page.clock.install();
+    await visit(page,server.url,'/hr/feedback');
+    const bell=page.locator('[data-news-bell]');
+    await bell.locator('[data-news-count]').waitFor();
+    assert.equal(await bell.locator('[data-news-count]').textContent(),'4');
+    await bell.click();
+    await page.getByRole('heading',{name:'HR-новости',exact:true}).waitFor();
+    await page.getByLabel('Тема',{exact:true}).selectOption('skills');
+    assert.equal(await page.locator('[data-news-content] tbody tr').count(),2);
+    await page.getByLabel('Только непрочитанные').check();
+    await page.getByRole('button',{name:'Отметить прочитанным: '+newsTitle}).click();
+    await page.getByRole('link',{name:newsTitle,exact:true}).waitFor({state:'hidden'});
+    assert.equal(await bell.locator('[data-news-count]').textContent(),'3');
+    await page.getByText('Каталог источников',{exact:true}).click();
+    await page.getByRole('link',{name:'hh.ru — статистика рынка труда',exact:true}).waitFor();
+    await measure(page,'news-catalog-open',1024);
+    await page.getByRole('button',{name:'Отметить все прочитанными'}).click();
+    await bell.locator('[data-news-count]').waitFor({state:'hidden'});
+    await Promise.all([
+      page.waitForResponse(response=>response.url().endsWith('/api/v1/hr/news')),
+      visit(page,server.url,'/hr/feedback')
+    ]);
+    newPublication=true;
+    await server.env.DB.prepare("UPDATE records SET sort='' WHERE kind='system' AND id='news-refresh'").bind().first();
+    await page.clock.fastForward(121000);
+    await page.getByText('В HR-новостях появились новые публикации.',{exact:true}).waitFor();
+    assert.equal(await bell.locator('[data-news-count]').textContent(),'1');
+    await bell.click();
+    await page.getByRole('link',{name:'Новые данные о рынке труда',exact:true}).waitFor();
+    console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:9,images},null,2));
     if(errors.size||fail.length)process.exitCode=1;
   } finally {
     await browser.close();

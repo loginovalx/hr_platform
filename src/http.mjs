@@ -329,6 +329,11 @@ async function importBatch(ctx) {
   return commit(ctx, [], result({ accepted, duplicates, errors }, 201));
 }
 async function hrRoutes(ctx, method, p) {
+  if (p[0] === "news") {
+    if (p.length === 1 && method === "GET") return newsList(ctx);
+    if (p.length === 2 && p[1] === "read" && method === "POST") return markNewsRead(ctx);
+    if (p.length === 2 && p[1] === "sources" && method === "GET") return result({items:newsCatalog});
+  }
   const action = p.join("/");
   if (p[0]==="requisitions" && method==="GET") {
     if (ctx.actor.vacancyIds) denied();
