@@ -2236,6 +2236,50 @@ paths:
                   maxLength: 140
               required:
               - candidateId
+  /hr/applications/{id}/interview-draft:
+    post:
+      tags: [Отклики]
+      summary: Подготовить черновик вопросов для интервью
+      operationId: post_hr_application_interview_draft
+      security:
+      - staffCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        '200':
+          description: Предложения YandexGPT с локальными заменами или вопросы вакансии
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [source, questions]
+                properties:
+                  source: {type: string, enum: [yandexgpt, local]}
+                  questions:
+                    type: array
+                    items:
+                      type: object
+                      required: [criterionId, label, question]
+                      properties:
+                        criterionId: {type: string}
+                        label: {type: string}
+                        question: {type: string}
+        '401':
+          description: Требуется вход в кабинет HR
+        '409':
+          description: Разбор отклика ещё выполняется
   /hr/applications/{id}/assessment:
     get:
       tags:
@@ -2921,7 +2965,7 @@ paths:
     get:
       tags:
       - Кандидаты
-      summary: Поиск профилей по ФИО
+      summary: Поиск профилей по ФИО и дополнительному образованию
       operationId: get_hr_candidates
       responses:
         '200':
@@ -2988,6 +3032,9 @@ paths:
         schema:
           type: string
           maxLength: 160
+      - name: additionalEducation
+        in: query
+        schema: {type: string, maxLength: 160}
     post:
       tags:
       - Кандидаты
@@ -3814,6 +3861,16 @@ paths:
               schema:
                 type: object
                 properties:
+                  departures:
+                    description: Агрегаты увольнений для администратора
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        department: {type: string}
+                        month: {type: string}
+                        category: {type: string, enum: [employer_initiated, voluntary, agreement, other]}
+                        total: {type: integer, minimum: 0}
                   totals:
                     type: object
                     properties:

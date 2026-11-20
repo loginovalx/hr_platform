@@ -280,15 +280,16 @@ async function overrideAssessment(ctx, app, criterionId) {
   return commit(ctx, stmts, result({ assessmentId: a.id, criteriaVersionId: app.criteriaVersionId, assessmentStatus: app.assessmentStatus, items: revised }));
 }
 function candidateSummary(person) {
-  return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, experience: person.experience, updatedAt: person.sort };
+  return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, additionalEducation: person.additionalEducation || "", experience: person.experience, updatedAt: person.sort };
 }
 async function createCandidate(ctx) {
   const b = ctx.body;
   const fullName = field(b.fullName, "fullName", limits.name, true);
   const email = contact(b.contact, false);
   const education = field(b.education, "education", 500);
+  const additionalEducation = field(b.additionalEducation, "additionalEducation", 500);
   const experience = field(b.experience, "experience", 1000);
-  const person = make({ fullName, searchName: lowered(fullName), contact: email, education, experience, factsSource: { type: "hr", actorName: ctx.actor.name, at: isoNow() } });
+  const person = make({ fullName, searchName: lowered(fullName), contact: email, education, additionalEducation, additionalEducationSearch: lowered(additionalEducation), experience, factsSource: { type: "hr", actorName: ctx.actor.name, at: isoNow() } });
   return commit(ctx, [put(ctx, "candidate", person)], result(candidateSummary(person), 201));
 }
 async function linkCandidate(ctx, a) {

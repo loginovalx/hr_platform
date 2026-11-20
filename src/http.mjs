@@ -75,6 +75,7 @@ async function hrApplications(ctx, method, p) {
     if (method === "GET" && p.length === 3) return result(await assessView(ctx, app));
     if (method === "PATCH" && p.length === 4) return overrideAssessment(ctx, app, p[3]);
   }
+  if (p[2] === "interview-draft" && p.length === 3 && method === "POST") return interviewDraft(ctx, app);
   if (p[2] === "stage" && p.length === 3 && method === "GET") return result(viewStage(app));
   if (p[2] === "transitions" && p.length === 3 && method === "POST") return transition(ctx, app);
   if (p[2] === "history" && p.length === 3 && method === "GET") {
@@ -128,7 +129,12 @@ async function hrRoutes(ctx, method, p) {
     if (p.length === 1 && method === "POST") return createCandidate(ctx);
     if (p.length === 1 && method === "GET") {
       const q = field(ctx.url.searchParams.get("q"), "q", limits.name);
-      const found = await page(ctx, "candidate", q ? ["instr(json_extract(data,'$.searchName'),?)>0"] : [], q ? [lowered(q)] : []);
+      const additional = field(ctx.url.searchParams.get("additionalEducation"), "additionalEducation", 160);
+      const conditions = [];
+      const params = [];
+      if (q) { conditions.push("instr(json_extract(data,'$.searchName'),?)>0"); params.push(lowered(q)); }
+      if (additional) { conditions.push("instr(json_extract(data,'$.additionalEducationSearch'),?)>0"); params.push(lowered(additional)); }
+      const found = await page(ctx, "candidate", conditions, params);
       return result({ ...found, items: found.items.map(candidateSummary) });
     }
     if (p.length === 2 && method === "GET") {
