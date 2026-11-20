@@ -97,6 +97,7 @@ let vacancyParts = null;
 let candidateSearchSeq = 0;
 let newsSession = null;
 const newsPollInterval = 120000;
+const newsPopoverSupported = "popover" in HTMLElement.prototype;
 async function api(path, { method = "GET", body, key = crypto.randomUUID() } = {}) {
   const headers = {};
   let payload = body;
@@ -177,11 +178,27 @@ const extraNav = [navItems[0], ...navItems.slice(4), ["/vacancies","Публич
 function navItem([href,label,icon], active) {
   return `<a class="nav-item" href="${href}" data-link ${active ? 'aria-current="page"' : ""}>${ic(icon)}${esc(label)}</a>`;
 }
-function newsBell() {
-  return `<a href="/hr/news" data-link data-news-bell class="btn btn-quiet btn-icon news-bell"
-    aria-label="HR-новости" ${location.pathname==="/hr/news" ? 'aria-current="page"' : ""}>${ic("bell")}<span data-news-count hidden></span></a>`;
+function newsBell(inline) {
+  const content = `${ic("bell")}<span data-news-count hidden></span>`;
+  const attributes = 'data-news-bell class="btn btn-quiet btn-icon news-bell" aria-label="HR-новости"';
+  if (inline) return `<a href="#hr-news-preview" ${attributes}>${content}</a>`;
+  if (!newsPopoverSupported) return `<a href="/hr/news" data-link ${attributes}>${content}</a>`;
+  return `<button type="button" popovertarget="hr-news-preview" ${attributes}>${content}</button>`;
 }
-function hrShell(content) {
+function newsWidget(inline = false) {
+  return `<section id="hr-news-preview" class="card news-widget" data-news-widget aria-labelledby="hr-news-preview-title"
+    ${inline ? 'tabindex="-1"' : 'popover="auto"'}>
+    <div class="news-widget-head">
+      <h2 id="hr-news-preview-title">HR-новости</h2>
+      ${link("/hr/news","Вся лента","secondary btn-sm")}
+    </div>
+    <div class="news-widget-body">
+      <div data-news-widget-items><p class="small muted">Загружаем новости…</p></div>
+      <div class="news-widget-mascot" aria-hidden="true"></div>
+    </div>
+  </section>`;
+}
+function hrShell(content, overviewPage = false) {
   const { pathname } = location;
   const section = navItems.find(([href]) => href === pathname || (href !== "/hr" && pathname.startsWith(href + "/"))) || navItems[0];
   const item = record => navItem(record, record[0] === section[0]);
@@ -196,14 +213,32 @@ function hrShell(content) {
     <button class="mobile-scrim" aria-label="Закрыть меню" data-action="menu"></button>
     <header class="top"><div class="row">${btn("","data-action=menu aria-label=\"Открыть меню\" aria-expanded=\"false\" aria-controls=\"rail\"","quiet btn-icon mobile-menu","menu")}
       <span class="crumb">${esc(section[1])}</span></div>
-      <div class="row top-tools">${newsBell()}<details class="profile-menu"><summary class="top-profile">${avatar(actor?.name || "Кадровая команда")}<span class="profile-text small strong">${esc(actor?.name || "Кадровая команда")}</span>${ic("down")}</summary>
+      <div class="row top-tools">${newsBell(overviewPage)}<details class="profile-menu"><summary class="top-profile">${avatar(actor?.name || "Кадровая команда")}<span class="profile-text small strong">${esc(actor?.name || "Кадровая команда")}</span>${ic("down")}</summary>
         <div class="drop">${actor?.hosted ? '<a class="btn btn-quiet" target="_top" href="/signout-with-chatgpt?returnTo=%2Fvacancies">Выйти из аккаунта</a>' : btn("Выйти из кабинета",'data-action="logout"',"quiet","logout")}</div>
       </details></div>
+      ${!overviewPage && newsPopoverSupported ? newsWidget() : ""}
     </header><main class="main" id="main"><div class="inner">${content}</div></main>
   </div>`;
 }
 const newsTopicNames = {regulation:"Трудовые правила", market:"Рынок труда", skills:"Навыки и ИИ"};
 const newsSourceNames = {mintrud:"Минтруд России", cbr:"Банк России", hse:"НИУ ВШЭ"};
+function paintNewsWidget(state) {
+  const slot = app.querySelector("[data-news-widget-items]");
+  if (!slot) return;
+  const items = state?.data?.items.slice(0,2);
+  const markup = items?.length ? `<ul class="news-widget-stories">${items.map(item=>`<li>
+    <a class="news-widget-story" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a>
+    <p class="news-widget-meta">${item.read ? "" : '<span class="news-dot" role="img" aria-label="Непрочитано"></span>'}<span>${esc(newsSourceNames[item.source])}</span><time datetime="${esc(item.publishedAt)}">${esc(monthDay.format(new Date(item.publishedAt)))}</time></p>
+  </li>`).join("")}</ul>` : `<p class="small muted">${state?.error ? "Лента временно недоступна." : items ? "Публикаций пока нет." : "Загружаем новости…"}</p>`;
+  if (slot.newsMarkup === markup) return;
+  const activeLink = slot.contains(document.activeElement) ? document.activeElement.getAttribute("href") : null;
+  slot.newsMarkup = markup;
+  slot.innerHTML = markup;
+  if (activeLink) {
+    const matching = [...slot.querySelectorAll("a")].find(anchor=>anchor.getAttribute("href")===activeLink);
+    (matching || slot.closest("[data-news-widget]").querySelector("a"))?.focus({preventScroll:true});
+  }
+}
 function newsView() {
   return `<div class="stack-lg">
     ${heading("HR-новости","Публикации о рынке труда, трудовых правилах и профессиональных навыках.")}
@@ -227,12 +262,13 @@ function newsView() {
 function paintNewsFeed(state) {
   const bell = app.querySelector("[data-news-bell]");
   if (!bell) return;
-  const data = state.data;
+  const data = state?.data;
   const count = data?.unreadCount || 0;
   const badge = bell.querySelector("[data-news-count]");
   badge.hidden = !count;
   badge.textContent = count;
   bell.setAttribute("aria-label", count ? `HR-новости, непрочитанные публикации (${count})` : "HR-новости");
+  paintNewsWidget(state);
   const status = app.querySelector("[data-news-status]");
   if (!status) return;
   const unavailable = data?.sources.filter(source=>source.available===false).map(source=>source.name);
@@ -425,9 +461,9 @@ function applicationTable(items, compact = false, filtered = false) {
 }
 async function overview() {
   const [a,r] = await Promise.all([getJSON("/hr/analytics"),getJSON("/hr/applications?limit=5")]);
-  return `<section class="hero"><div class="hero-body"><div class="hero-kicker">${ic("building")} Нижний Новгород</div><h1 tabindex="-1">Кабинет подбора</h1><p>Публикуйте вакансии, разбирайте отклики и следите за ходом найма.</p><div class="hero-actions">
+  return `<div class="overview-lead"><section class="hero"><div class="hero-body"><div class="hero-kicker">${ic("building")} Нижний Новгород</div><h1 tabindex="-1">Кабинет подбора</h1><p>Публикуйте вакансии, разбирайте отклики и следите за ходом найма.</p><div class="hero-actions">
     ${actor.scoped?"":link("/hr/vacancies/new","Создать вакансию","primary","plus")}${link("/hr/applications","Открыть отклики",actor.scoped?"primary":"secondary","inbox")}
-  </div></div>${city()}</section>
+  </div></div>${city()}</section>${newsWidget(true)}</div>
   <section class="stack" aria-labelledby="overview-label"><div class="overview-head"><h2 id="overview-label">Подбор в цифрах</h2>${link("/hr/analytics","Открыть аналитику","quiet btn-sm","bars")}</div>${metrics(a.totals)}</section>
   <div class="dashboard-grid"><section class="card pad">${cardHead("Динамика откликов","За последние 7 дней",chip("7 дней"))}${spark(a.series)}</section>
   <section class="card pad">${cardHead("Воронка найма","Дошли до этапа",tile("funnel"))}${funnelChart(a.funnel,a.totals.received)}</section></div>
@@ -1184,7 +1220,7 @@ async function render({focus=false}={}) {
     }
     if(run!==navRun)return;
     if(view==null)throw Object.assign(new Error("Проверьте адрес страницы."),{status:404});
-    app.innerHTML=isHr?hrShell(view):publicShell(view);
+    app.innerHTML=isHr?hrShell(view,bits.length===1):publicShell(view);
     const title=app.querySelector("h1");
     document.title=(title?.textContent?title.textContent+" · ":"")+"Кадры · Горький";
     if(focus)title?.focus({preventScroll:true});

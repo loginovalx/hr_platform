@@ -102,6 +102,18 @@ async function run(){
     await visit(page,server.url,'/hr');
     await page.getByRole('button',{name:'Открыть демо-кабинет'}).click();
     await page.getByRole('heading',{name:'Кабинет подбора'}).waitFor();
+    await page.setViewportSize({width:1440,height:900});
+    const overviewWidget=page.locator('.overview-lead [data-news-widget]');
+    await overviewWidget.getByRole('link',{name:newsTitle,exact:true}).waitFor({timeout:3000});
+    const widgetBox=await overviewWidget.boundingBox();
+    const heroBox=await page.locator('.hero').boundingBox();
+    assert.ok(widgetBox.x>=heroBox.x+heroBox.width && Math.abs(widgetBox.y-heroBox.y)<2);
+    assert.ok(widgetBox.width*widgetBox.height/(1440*900)>=0.08 && widgetBox.width*widgetBox.height/(1440*900)<=0.17);
+    const mascotSlot=overviewWidget.locator('.news-widget-mascot');
+    const mascotBox=await mascotSlot.boundingBox();
+    const storiesBox=await overviewWidget.locator('[data-news-widget-items]').boundingBox();
+    assert.ok(mascotBox.width>=70 && mascotBox.x>=storiesBox.x+storiesBox.width);
+    assert.equal(await mascotSlot.evaluate(node=>node.childElementCount),0);
     await page.setViewportSize({width:390,height:900});
     assert.equal(await page.getByRole('navigation',{name:'Кабинет HR'}).isVisible(),false);
     const mobileMenu=page.getByRole('button',{name:'Открыть меню'});
@@ -109,13 +121,18 @@ async function run(){
     assert.equal(await mobileMenu.getAttribute('aria-expanded'),'true');
     await page.keyboard.press('Escape');
     assert.equal(await mobileMenu.getAttribute('aria-expanded'),'false');
+    await visit(page,server.url,'/hr/feedback');
+    await page.locator('[data-news-bell]').click();
+    await page.locator('[data-news-widget][popover]').getByRole('link',{name:newsTitle,exact:true}).waitFor();
+    await measure(page,'news-widget-mobile',390);
     for (const width of widths){
       await page.setViewportSize({width,height:900});
       for(const route of routes){
         await visit(page,server.url,route);
+        if(route==='/hr')await overviewWidget.getByRole('link',{name:newsTitle,exact:true}).waitFor();
         if(route==='/hr/news')await page.getByRole('link',{name:newsTitle,exact:true}).waitFor();
         await measure(page,route,width);
-        if([390,1440].includes(width)&&['/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/feedback','/hr/news','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
+        if([390,1440].includes(width)&&['/hr','/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/feedback','/hr/news','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
           await page.screenshot({path:images+'/'+width+'-'+route.replace(/[^a-z0-9]+/gi,'_')+'.png'});
       }
       await visit(page,server.url,'/hr/applications?vacancyId=vacancy_4&priority=on');
@@ -289,7 +306,14 @@ async function run(){
     const bell=page.locator('[data-news-bell]');
     await bell.locator('[data-news-count]').waitFor();
     assert.equal(await bell.locator('[data-news-count]').textContent(),'4');
+    const popup=page.locator('[data-news-widget][popover]');
     await bell.click();
+    await popup.getByRole('link',{name:newsTitle,exact:true}).waitFor();
+    await page.keyboard.press('Escape');
+    await popup.waitFor({state:'hidden'});
+    assert.equal(await bell.evaluate(node=>node===document.activeElement),true);
+    await bell.click();
+    await popup.getByRole('link',{name:'Вся лента',exact:true}).click();
     await page.getByRole('heading',{name:'HR-новости',exact:true}).waitFor();
     await page.getByLabel('Тема',{exact:true}).selectOption('skills');
     assert.equal(await page.locator('[data-news-content] tbody tr').count(),2);
@@ -312,6 +336,8 @@ async function run(){
     await page.getByText('В HR-новостях появились новые публикации.',{exact:true}).waitFor();
     assert.equal(await bell.locator('[data-news-count]').textContent(),'1');
     await bell.click();
+    await popup.getByRole('link',{name:'Новые данные о рынке труда',exact:true}).waitFor();
+    await popup.getByRole('link',{name:'Вся лента',exact:true}).click();
     await page.getByRole('link',{name:'Новые данные о рынке труда',exact:true}).waitFor();
     console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:9,images},null,2));
     if(errors.size||fail.length)process.exitCode=1;
