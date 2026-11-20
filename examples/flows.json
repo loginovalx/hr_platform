@@ -38,7 +38,7 @@
   },
   "events": [
     {"eventId": "e1", "type": "application.created", "schemaVersion": 1, "occurredAt": "2026-11-20T12:00:00.000Z", "payload": {"applicationId": "a1", "vacancyId": "vacancy_1", "criteriaVersionId": "cv1", "sourceChannel": "public_form", "receivedAt": "2026-11-20T12:00:00.000Z"}},
-    {"eventId": "e3", "type": "clarification.answered", "schemaVersion": 1, "occurredAt": "2026-11-20T12:15:00.000Z", "payload": {"applicationId": "a1", "threadId": "th1", "questionId": "q1", "criterionId": "req_sql", "answerId": "src_2"}},
+    {"eventId": "e3", "type": "clarification.answered", "schemaVersion": 1, "occurredAt": "2026-11-20T12:15:00.000Z", "payload": {"applicationId": "a1", "threadId": "th1"}},
     {"eventId": "e2", "type": "application.stage_changed", "schemaVersion": 1, "occurredAt": "2026-11-20T12:30:00.000Z", "payload": {"applicationId": "a1", "fromStage": "decision", "toStage": "decision", "outcome": "hired", "actorId": "hr1"}},
     {"eventId": "e4", "type": "employment.terminated", "schemaVersion": 1, "occurredAt": "2026-11-20T13:00:00.000Z", "payload": {"employmentId": "emp1", "terminationId": "term1", "effectiveAt": "2026-11-20T00:00:00.000Z", "reasonCategory": "employer_initiated"}},
     {"eventId": "e5", "type": "survey.responded", "schemaVersion": 1, "occurredAt": "2026-11-20T13:15:00.000Z", "payload": {"invitationId": "inv1", "surveyType": "exit_feedback", "responseId": "r1"}}

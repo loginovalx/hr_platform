@@ -96,16 +96,9 @@ async function ensureData(ctx) {
         sourceId: source.id, sourceChannel, sourceReceivedAt: sourceChannel === "archive" && i === 18 ? null : at,
         receivedAt: at, acceptedAt: at, importedAt: sourceChannel === "public_form" ? null : traceTimestamp(1),
         candidateId: i === 14 ? firstCandidate.id : outcome || [2, 6, 9, 11, 20].includes(i) ? person.id : null,
-        assessmentStatus: "ready", clarificationThreadId: null, stage: s
+        assessmentStatus: "not_analyzed", clarificationThreadId: null, stage: s
       }, v.id, at, id);
-      const items = version.criteria.map(c => scoreCriterion(c, [source]));
-      const open = items.filter(x => x.question);
-      if (open.length) {
-        const thread = add("thread", make({ applicationId: id, assessmentId: id, questions: open.map(x => ({ questionId: uuid(), criterionId: x.criterionId, text: x.question, status: "open" })) }, id, at));
-        app.clarificationThreadId = thread.id;
-      }
       add("application", app);
-      add("assessment", make({ assessmentStatus: "ready", criteriaVersionId: app.criteriaVersionId, items, assessedAt: traceTimestamp(1) }, id, at, id));
       const states = stageOrder.slice(0, stageOrder.indexOf(currentStage) + 1);
       states.forEach((stage, j) => add("stage_event", make({
         fromStage: states[j - 1] || null, toStage: stage, outcome: null, action: ["receive", "start_review", "invite_interview", "move_to_decision"][j],

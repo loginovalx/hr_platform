@@ -221,7 +221,7 @@ function funnelChart(rows, total) {
   <div class="funnel-track" role="meter" aria-label="${esc(stages[x.stage][0])}" aria-valuemin="0" aria-valuemax="${Math.max(1,total)}" aria-valuenow="${x.reached}"><span style="--progress:${total ? x.reached / total * 100 : 0}%"></span></div></div>`).join("")}</div>`;
 }
 const intakeStatuses = {
-  review_first: ["Рассмотреть в первую очередь", "green"],
+  review_first: ["Требования подтверждены", "green"],
   clarify: ["Нужно уточнение", "amber"],
   check_source: ["Проверить данные", "amber"],
   confirmed_gap: ["Расхождение подтверждено HR", "purple"],
@@ -234,10 +234,10 @@ const intakeReasons = {
   hr_confirmed_gap: "Кадровик отметил несоответствие по обязательному требованию.",
   missing_source: "Источник отклика недоступен.",
   unreadable_attachment: "В файле нет текста для разбора. Откройте вложение или запросите текст.",
-  missing_text: "Нет читаемого текста резюме или ответов на тест.",
+  missing_text: "Нет читаемого текста резюме.",
   missing_contact: "В отклике и профиле нет email для связи.",
-  analysis_pending: "Проверяем требования по материалам отклика.",
-  analysis_unavailable: "Автоматический разбор не готов. Проверьте материалы вручную.",
+  analysis_pending: "GigaChat сопоставляет резюме с вакансией.",
+  analysis_unavailable: "Вывод GigaChat появится после разбора резюме.",
   no_required_criteria: "У вакансии нет обязательных критериев. Просмотрите отклик вручную.",
   required_supported: "По каждому обязательному требованию есть цитата или подтверждение кадровика.",
   required_need_evidence: "По части обязательных требований нужны дополнительные сведения.",
@@ -296,13 +296,12 @@ function vacancySelect(menu, current, all = true) {
   if (menu.nextCursor) options.push(["__more","Загрузить ещё вакансии…"]);
   return selectField("vacancyId","Вакансия",options,current,`${all?"":"required"} data-vacancy-cursor="${esc(menu.nextCursor||"")}" data-published-only="${menu.publishedOnly?"1":"0"}" data-value="${esc(current||"")}"`);
 }
-const codeLabels = { custom:"Свои ключевые слова",sql:"SQL",python:"Python",analytics:"Аналитика",api:"Работа с API",communication:"Коммуникация",education:"Образование",project:"Проектная работа",office:"Офисные инструменты",experience:"Опыт работы" };
+const codeLabels = { custom:"Другой",sql:"SQL",python:"Python",analytics:"Аналитика",api:"Работа с API",communication:"Коммуникация",education:"Образование",project:"Проектная работа",office:"Офисные инструменты",experience:"Опыт работы" };
 function vacancyEditorPart(v,i) {
   const suffix=v.id;
   const drop=btn("Удалить",`data-action="remove-part" data-id="${esc(suffix)}"`,"quiet btn-sm","close");
   return `<div class="form-block stack-sm"><div class="row between"><h3>Критерий ${i+1}</h3>${drop}</div>
     ${pair(input("criteria_"+suffix+"_label","Требование",{required:true,max:160,value:v.label,placeholder:"Например, опыт работы с SQL"}),selectField("criteria_"+suffix+"_code","Тип критерия",Object.entries(codeLabels),v.code||"custom"))}
-    ${input("criteria_"+suffix+"_keywords","Ключевые слова",{max:850,value:(v.keywords||[]).join(", "),optional:true,hint:"Перечислите через запятую. Слова используются для локальной проверки."})}
     ${input("criteria_"+suffix+"_question","Вопрос для уточнения",{max:300,value:v.question,optional:true})}
     ${input("criteria_"+suffix+"_reference","Основание или пункт инструкции",{max:250,value:v.reference,optional:true})}
     ${check("criteria_"+suffix+"_required","Обязательный критерий",v.required!==false)}</div>`;
@@ -316,7 +315,7 @@ function captureVacancyParts(form) {
   const f=new FormData(form);
   for (const v of vacancyParts.criteria) {
     const key="criteria_"+v.id+"_";
-    Object.assign(v,{label:f.get(key+"label")||"",code:f.get(key+"code")||"custom",keywords:String(f.get(key+"keywords")||"").split(",").map(x=>x.trim()).filter(Boolean),question:f.get(key+"question")||"",reference:f.get(key+"reference")||"",required:f.has(key+"required")});
+    Object.assign(v,{label:f.get(key+"label")||"",code:f.get(key+"code")||"custom",question:f.get(key+"question")||"",reference:f.get(key+"reference")||"",required:f.has(key+"required")});
   }
 }
 async function editVacancyPage(id) {
@@ -358,7 +357,6 @@ async function applicationList() {
     ${selectField("stage","Этап", [["","Все этапы"],...Object.entries(stages).map(([id,[text]])=>[id,text])],q.get("stage"))}
     ${selectField("channel","Источник",[["","Все источники"],...Object.entries(sourceNames)],q.get("channel"))}
     ${selectField("triage","Очередь разбора",queues,q.get("triage"))}
-    ${check("priority","По приоритету проверки выбранной вакансии",q.get("priority")==="on")}
     <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}</div>
   </form>
   <section class="card">${applicationTable(r.items)}${pagination(r.nextCursor)}</section>`;
@@ -394,27 +392,48 @@ async function importModal(archive) {
     ${pair(selectField("sourceChannel","Источник",Object.entries(sourceNames).filter(x=>x[0]!=="public_form"),"email"),input("sourceReceivedAt","Дата получения",{type:"date",optional:true}))}
     ${resumeFields(true)}${errors}<div>${submit("Сохранить отклик","check")}</div></form>`);
 }
+const assessmentMessages = {
+  gigachat_not_configured: "Ключ GigaChat отсутствует. Задайте GIGACHAT_AUTH_KEY и перезапустите сервер.",
+  gigachat_auth: "GigaChat отклонил авторизацию. Проверьте ключ и значение GIGACHAT_SCOPE.",
+  gigachat_tls: "Сервер не может проверить сертификат GigaChat. Настройте NODE_EXTRA_CA_CERTS.",
+  gigachat_payment_required: "GigaChat вернул HTTP 402. Проверьте баланс проекта и доступный лимит токенов.",
+  gigachat_rate_limited: "GigaChat вернул HTTP 429. Достигнут лимит запросов. Попробуйте позже.",
+  gigachat_model_unavailable: "GigaChat вернул HTTP 404. Проверьте, доступна ли модель GIGACHAT_MODEL для вашего проекта.",
+  gigachat_access_denied: "GigaChat вернул HTTP 403. Проверьте права проекта на выбранную модель.",
+  gigachat_request_rejected: "GigaChat отклонил параметры запроса. HTTP-статус указан в терминале сервера.",
+  gigachat_timeout: "GigaChat не ответил за отведённое время.",
+  gigachat_unavailable: "GigaChat сейчас недоступен. Повторите разбор.",
+  gigachat_invalid_response: "GigaChat вернул неполный вывод. Повторите разбор.",
+  pdf_extractor_unavailable: "Установите Poppler для чтения PDF и повторите разбор.",
+  resume_unreadable: "Не удалось извлечь текст резюме. Используйте файл с выделяемым текстом или введите резюме вручную."
+};
 function assessmentCards(assessment) {
   const hrLabel = status => statusNames[status] || statusNames.needs_clarification;
-  if (!assessment.items.length) return empty("Критерии не заданы","Добавьте критерии при подготовке новой версии вакансии.","check");
-  const states = { pending:"Проверяем источники…",failed:"Разбор прервался. Критерии доступны для ручной проверки." };
-  return `${states[assessment.assessmentStatus] ? `<div class="note">${esc(states[assessment.assessmentStatus])}</div>` : ""}
+  const states = { pending:"GigaChat разбирает резюме…",not_analyzed:"Нажмите «Разобрать резюме», чтобы получить вывод GigaChat.",failed:assessmentMessages[assessment.issue] || "Не удалось завершить разбор. Повторите попытку." };
+  const state = states[assessment.assessmentStatus];
+  return `${state ? `<div class="note" role="status">${esc(state)}</div>` : ""}
+  ${assessment.provider ? `<section class="criterion"><h3>Образование</h3>${assessment.education?.length ? assessment.education.map(line=>`<p>${esc(line)}</p>`).join("") : `<p class="muted">${assessment.education===null ? "Повторите разбор, чтобы вывести образование." : "Сведения об образовании в резюме не найдены."}</p>`}</section>` : ""}
+  ${assessment.summary ? `<section class="note stack-sm"><h3>${assessment.assessmentStatus==="ready" ? "Краткий вывод по резюме" : "Предыдущий вывод по резюме"}</h3><p class="pre">${esc(assessment.summary)}</p></section>` : ""}
+  ${assessment.items.length ? '<h3>Требования вакансии</h3>' : ""}
   <div class="stack-sm">${assessment.items.map(x=>{
-    const [status,color]=hrLabel(x.hrOverride?.status || x.status);
+    const stateKey=x.hrOverride?.status || x.status;
+    const [status,color]=hrLabel(stateKey);
+    const mark={ matched:"✓", partial:"◐", needs_clarification:"?", not_met:"×" }[stateKey] || "?";
     const proof=x.evidence.map(e=>`<div class="stack-sm"><blockquote class="quote">${esc(e.quote)}</blockquote>
       <div>${btn(e.type==="resume"?"Открыть резюме":e.type==="test"?"Открыть ответ теста":"Открыть ответ кандидата",`data-action="evidence" data-type="${esc(e.type)}" data-id="${esc(e.sourceId)}"`,"quiet btn-sm","file")}</div></div>`).join("");
-    return `<article class="criterion"><div class="row between wrap"><h3 class="grow">${esc(x.label)}</h3>${chip(status,color,true)}</div>
+    return `<article class="criterion"><div class="row between wrap"><h4 class="grow">${esc(x.label)}</h4>${assessment.provider||x.hrOverride ? `<span class="pill pill-${color}"><span aria-hidden="true">${mark}</span> ${esc(status)}</span>` : ""}</div>
       ${x.reference ? `<p class="small muted">${esc(x.reference)}</p>` : ""}
-      ${proof || '<p class="small muted">Сведения в источниках не указаны.</p>'}
+      ${x.comment && !x.hrOverride ? `<p class="small">${esc(x.comment)}</p>` : ""}
+      ${proof}
       ${x.question && !x.hrOverride ? `<p class="small"><strong>Уточнение.</strong> ${esc(x.question)}</p>` : ""}
       ${x.hrOverride ? `<div class="note"><strong>Правка HR.</strong> ${esc(x.hrOverride.reason)}<p class="tiny muted">${esc(x.hrOverride.actorName)} · ${esc(date(x.hrOverride.at,true))}</p></div>` : ""}
-      <div>${btn("Изменить вывод",`data-action="override" data-id="${esc(x.criterionId)}"`,"secondary btn-sm","edit")}</div></article>`;
+      ${assessment.assessmentStatus!=="pending" ? `<div>${btn("Изменить вывод",`data-action="override" data-id="${esc(x.criterionId)}"`,"secondary btn-sm","edit")}</div>` : ""}</article>`;
   }).join("")}</div>`;
 }
 function sourceCard(a) {
   const s=a.resumeSource;
   const attachment=s.attachment ? `<div class="attachment row wrap">${tile("file")}<div class="grow"><div class="strong small">${esc(s.attachment.name)}</div><div class="muted tiny">${number(Math.ceil(s.attachment.size/1024))} КБ</div></div><a class="btn btn-secondary btn-sm" href="${base}/hr/resume-sources/${enc(s.sourceId)}?download=1">${ic("download")} Скачать</a></div>` : "";
-  return `<div class="stack">${attachment}${s.extractStatus==="manual"?'<p class="note">Исходник сохранён. Текст вложения доступен для ручной проверки после скачивания.</p>':s.extractStatus==="truncated"?'<p class="note">На странице показаны первые 20 000 символов. Полный текст есть в исходном файле.</p>':""}${s.text?`<div class="resume" tabindex="0">${esc(s.text)}</div>`:'<p class="muted small">Текст не указан.</p>'}</div>`;
+  return `<div class="stack">${attachment}${["manual","tool_missing"].includes(s.extractStatus)?'<p class="note">Текст не удалось извлечь. Исходник доступен для скачивания.</p>':s.extractStatus==="truncated"?'<p class="note">Для разбора использованы первые 20 000 символов. Полный текст есть в исходном файле.</p>':""}${s.text?`<div class="resume" tabindex="0">${esc(s.text)}</div>`:'<p class="muted small">Текст не указан.</p>'}</div>`;
 }
 function interviewCard(record) {
   if (!record.interview) return "";
@@ -448,8 +467,12 @@ async function applicationDetail(id) {
   const record={a,evaluation,person,thread,history,employment,interview};
   appDetailData=record;
   let detail="";
-  if(active==="assessment") detail=`<div class="stack">${cardHead("Разбор по критериям","Локальная проверка по источникам отклика.",
-    evaluation.items.length && evaluation.assessmentStatus!=="pending" ? btn("Вопросы для интервью",'data-action="interview-draft"',"secondary btn-sm","chat") : "")}${assessmentCards(evaluation)}</div>`;
+  if(active==="assessment") {
+    const pending=evaluation.assessmentStatus==="pending";
+    const analyze=pending ? "" : btn(evaluation.provider||evaluation.assessmentStatus==="failed"?"Повторить разбор":"Разобрать резюме",'data-action="analyze-resume"',"secondary btn-sm","file");
+    const interviewDraft=evaluation.items.length&&!pending?btn("Вопросы для интервью",'data-action="interview-draft"',"secondary btn-sm","chat"):"";
+    detail=`<div class="stack">${cardHead("Разбор резюме GigaChat","Сопоставление опыта с требованиями вакансии.",analyze)}${assessmentCards(evaluation)}${interviewDraft?'<div>'+interviewDraft+'</div>':""}</div>`;
+  }
   if(active==="resume") detail=`<div class="stack">${cardHead("Исходное резюме")}${sourceCard(a)}</div>`;
   if(active==="test") detail=`<div class="stack">${cardHead("Ответы на тест")}${archivedAnswers.map(x=>`<article class="criterion"><h3>${esc(x.question)}</h3><div class="small pre">${esc(x.value)}</div></article>`).join("")}</div>`;
   if(active==="clarification") detail=`<div class="stack">${cardHead("Уточнения кандидату","Ответы хранятся вместе с источником отклика.")}${thread ? thread.questions.map(q=>`<article class="criterion"><div class="chat-bubble pre">${esc(q.text)}</div>
@@ -647,6 +670,19 @@ function loadError(error, isHr) {
   const main=`<div class="${isHr?"":"public-narrow "}card">${empty(title,error.message,expired?"clock":"inbox",link(isHr?"/hr":"/vacancies",isHr?"К обзору":"К вакансиям","primary"))}</div>`;
   return isHr?hrShell(main):publicShell(main);
 }
+function pollAssessment(id, run) {
+  setTimeout(async () => {
+    if (run!==navRun) return;
+    try {
+      const evaluation=await getJSON("/hr/applications/"+enc(id)+"/assessment");
+      if (run!==navRun) return;
+      if (evaluation.assessmentStatus!=="pending"&&!modal.open) await render();
+      else pollAssessment(id,run);
+    } catch {
+      if (run===navRun) toast("Не удалось проверить разбор. Обновите страницу.",true);
+    }
+  },1800);
+}
 async function render({focus=false}={}) {
   const run=++navRun;
   const path=location.pathname.replace(/\/$/,"")||"/";
@@ -682,6 +718,7 @@ async function render({focus=false}={}) {
     if(run!==navRun)return;
     if(view==null)throw Object.assign(new Error("Проверьте адрес страницы."),{status:404});
     app.innerHTML=isHr?hrShell(view):publicShell(view);
+    if (bits[1]==="applications"&&bits[2]&&appDetailData?.evaluation.assessmentStatus==="pending") pollAssessment(bits[2],run);
     const title=app.querySelector("h1");
     document.title=(title?.textContent?title.textContent+" · ":"")+"Кадры · Горький";
     if(focus)title?.focus({preventScroll:true});
@@ -908,6 +945,18 @@ const clickActions = {
   "import-application"(){return importModal(false);},
   "import-archive"(){return importModal(true);},
   "new-candidate"(){showDialog("Новый профиль",candidateForm());},
+  async "analyze-resume"(target){
+    const id=appDetailData.a.applicationId;
+    target.disabled=true;
+    try {
+      await api("/hr/applications/"+enc(id)+"/assessment",{method:"POST",body:{},key:crypto.randomUUID()});
+      if (!target.isConnected) return;
+      toast("GigaChat разбирает резюме…");
+      await render();
+    } finally {
+      target.disabled=false;
+    }
+  },
   override(target){
     const item=appDetailData.evaluation.items.find(x=>x.criterionId===target.dataset.id);
     showDialog("Правка критерия",`<form class="stack" data-form="override" data-id="${esc(item.criterionId)}"><p class="small muted">${esc(item.label)}</p>

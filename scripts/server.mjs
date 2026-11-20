@@ -47,7 +47,7 @@ export async function localRuntime(options = {}) {
     YANDEX_MODEL: options.yandex?.model ?? process.env.YANDEX_MODEL,
     YANDEX_FETCH: options.yandex?.fetch,
     GIGACHAT_AUTH_KEY: options.gigachat?.key ?? process.env.GIGACHAT_AUTH_KEY,
-    GIGACHAT_SCOPE: process.env.GIGACHAT_SCOPE,
+    GIGACHAT_SCOPE: options.gigachat?.scope ?? process.env.GIGACHAT_SCOPE,
     GIGACHAT_MODEL: process.env.GIGACHAT_MODEL,
     GIGACHAT_FETCH: options.gigachat?.fetch,
     DB: {
@@ -78,7 +78,7 @@ export async function localRuntime(options = {}) {
 }
 function extractPdf(bytes) {
   return new Promise((resolveText, reject) => {
-    const child = spawn("pdftotext", ["-f", "1", "-l", "10", "-enc", "UTF-8", "-", "-"], { stdio: ["pipe", "pipe", "ignore"], timeout: 3000 });
+    const child = spawn("pdftotext", ["-enc", "UTF-8", "-", "-"], { stdio: ["pipe", "pipe", "ignore"], timeout: 3000 });
     const pieces = [];
     let size = 0;
     child.stdout.on("data", chunk => {
@@ -95,6 +95,7 @@ function extractPdf(bytes) {
     child.stdin.end(bytes);
   });
 }
+
 export async function openServer(options = {}) {
   const runtime = await localRuntime(options);
   const running = new Set();

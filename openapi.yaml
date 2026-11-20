@@ -347,6 +347,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
         default:
           description: Ошибка запроса
           content:
@@ -441,6 +442,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
                   clarificationThreadId:
                     anyOf:
                     - type: string
@@ -1658,6 +1660,7 @@ paths:
                           - pending
                           - ready
                           - failed
+                          - not_analyzed
                         candidateId:
                           anyOf:
                           - type: string
@@ -1748,6 +1751,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
         default:
           description: Ошибка запроса
           content:
@@ -1859,6 +1863,7 @@ paths:
                           - pending
                           - ready
                           - failed
+                          - not_analyzed
                     maxItems: 20
                   errors:
                     type: array
@@ -2072,6 +2077,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
                   candidateId:
                     anyOf:
                     - type: string
@@ -2136,6 +2142,8 @@ paths:
                         type: string
                         enum:
                         - not_needed
+                        - pending
+                        - tool_missing
                         - manual
                         - truncated
                         - extracted
@@ -2276,7 +2284,7 @@ paths:
     get:
       tags:
       - Отклики
-      summary: Разбор по критериям
+      summary: Разбор резюме GigaChat
       operationId: get_hr_applications_id_assessment
       responses:
         '200':
@@ -2292,6 +2300,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
                   criteriaVersionId:
                     type: string
                     maxLength: 140
@@ -2300,6 +2309,20 @@ paths:
                     - type: string
                       maxLength: 140
                     - type: 'null'
+                  provider:
+                    enum: [gigachat, null]
+                  summary:
+                    type: [string, 'null']
+                    maxLength: 900
+                  education:
+                    description: Выдержки об образовании из резюме. Null означает, что разбор сохранён до появления этого поля.
+                    type: [array, 'null']
+                    maxItems: 4
+                    items:
+                      type: string
+                      maxLength: 300
+                  issue:
+                    type: [string, 'null']
                   items:
                     type: array
                     items:
@@ -2319,6 +2342,9 @@ paths:
                           - partial
                           - needs_clarification
                           - not_met
+                        comment:
+                          type: [string, 'null']
+                          maxLength: 480
                         evidence:
                           type: array
                           items:
@@ -2381,6 +2407,25 @@ paths:
         schema:
           type: string
           maxLength: 140
+    post:
+      tags:
+      - Отклики
+      summary: Запустить повторный разбор резюме GigaChat
+      operationId: post_hr_applications_id_assessment
+      responses:
+        '202':
+          description: Разбор поставлен в очередь
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessmentStatus:
+                    const: pending
+        '401':
+          description: Требуется вход в кабинет HR
+        '503':
+          description: Ключ GigaChat не настроен
   /hr/applications/{id}/assessment/{criterionId}:
     patch:
       tags:
@@ -2401,6 +2446,7 @@ paths:
                     - pending
                     - ready
                     - failed
+                    - not_analyzed
                   criteriaVersionId:
                     type: string
                     maxLength: 140
@@ -2818,6 +2864,8 @@ paths:
                     type: string
                     enum:
                     - not_needed
+                    - pending
+                    - tool_missing
                     - manual
                     - truncated
                     - extracted
@@ -3201,6 +3249,7 @@ paths:
                           - pending
                           - ready
                           - failed
+                          - not_analyzed
                         candidateId:
                           anyOf:
                           - type: string

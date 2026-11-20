@@ -49,12 +49,31 @@ async function docxText(bytes) {
   }
   zipError();
 }
+function hasResumeText(text) {
+  return /\p{L}/u.test(text.replace(/\b(?:https?:\/\/|www\.)\S+/giu, ""));
+}
+
+async function readAttachmentText(ctx, ext, bytes) {
+  let content;
+  try {
+    if (ext === "txt") content = textDecoder.decode(bytes);
+    if (ext === "docx") content = await docxText(bytes);
+    if (ext === "pdf") content = await ctx.env.extractPdf(bytes);
+  } catch (error) {
+    return { text: "", extractStatus: error.code === "ENOENT" ? "tool_missing" : "manual" };
+  }
+  const extracted = content.replaceAll("\0", "").trim();
+  return {
+    text: extracted.slice(0, limits.resume),
+    extractStatus: extracted.length > limits.resume ? "truncated" : hasResumeText(extracted) ? "extracted" : "manual"
+  };
+}
+
 async function prepareResume(ctx, required, singleSource = false) {
   const resumeText = field(ctx.body.resumeText, "resumeText", limits.resume);
   const file = ctx.body.resumeFile;
   let attachment = null;
-  let extracted = "";
-  let extractStatus = "not_needed";
+  let contents = { text: resumeText, extractStatus: "not_needed" };
   if (file !== undefined && !((file instanceof Blob) && typeof file.name === "string")) invalid("resumeFile", "invalid_file", "Приложите файл через форму.");
   if (file?.size && resumeText && singleSource) invalid("resumeFile", "one_resume_source", "Выберите один способ: прикрепите файл или введите текст.");
   if (file?.size) {
@@ -66,18 +85,11 @@ async function prepareResume(ctx, required, singleSource = false) {
     if (ext === "pdf" && textDecoder.decode(bytes.slice(0, 8)).indexOf("%PDF-") !== 0) invalid("resumeFile", "invalid_file", "Содержимое файла не соответствует формату PDF.");
     if (ext === "docx" && (bytes[0] !== 80 || bytes[1] !== 75)) invalid("resumeFile", "invalid_file", "Содержимое файла не соответствует формату DOCX.");
     if (!resumeText) {
-      try {
-        if (ext === "txt") extracted = textDecoder.decode(bytes);
-        if (ext === "docx") extracted = await docxText(bytes);
-        if (ext === "pdf" && ctx.env.extractPdf) extracted = await ctx.env.extractPdf(bytes);
-      } catch {
-        extractStatus = "manual";
-      }
-      extracted = extracted.replaceAll("\0", "").trim();
-      extractStatus = extracted.length > limits.resume ? "truncated" : extracted ? "extracted" : "manual";
+      if (ext === "pdf") contents.extractStatus = ctx.env.extractPdf ? "pending" : "manual";
+      else contents = await readAttachmentText(ctx, ext, bytes);
     }
     attachment = { name: safeName, size: file.size, type: extMime[ext], bytes };
   }
   if (required && !resumeText && !attachment) invalid("resume", "required", "Добавьте текст или файл резюме.");
-  return { text: resumeText || extracted.slice(0, limits.resume), attachment, extractStatus };
+  return { ...contents, attachment };
 }

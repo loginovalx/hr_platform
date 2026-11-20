@@ -214,18 +214,18 @@ async function publicClarification(ctx, id) {
   }
   if (!sourceAnswers.size) invalid("answers", "required", "Добавьте хотя бы один ответ.");
   const changed = [...expect(ctx, "thread", thread)];
-  const pending = [];
   const questions = thread.questions.map(q => {
     if (!sourceAnswers.has(q.questionId)) return q;
     const answer = sourceAnswers.get(q.questionId);
     const source = make({ type: "clarification", text: answer, questionId: q.questionId }, thread.applicationId);
-    const e = event(ctx, "clarification.answered", { applicationId: thread.applicationId, threadId: thread.id, questionId: q.questionId, criterionId: q.criterionId, answerId: source.id });
-    pending.push(e.id);
-    changed.push(put(ctx, "source", source), e.stmt);
+    changed.push(put(ctx, "source", source));
     return { ...q, status: "answered", answer, answerId: source.id };
   });
-  changed.push(update(ctx, "thread", { ...thread, questions }));
-  return commit(ctx, changed, result({ accepted: true }, 202, { process: pending }));
+  const answered = event(ctx, "clarification.answered", { applicationId: thread.applicationId, threadId: thread.id });
+  const app = await get(ctx, "application", thread.applicationId);
+  changed.push(...expect(ctx, "application", app), update(ctx, "application", { ...app, assessmentStatus: "pending", analysisIssue: null }),
+    update(ctx, "thread", { ...thread, questions }), answered.stmt);
+  return commit(ctx, changed, result({ accepted: true }, 202, { process: answered.id }));
 }
 const moscowDay = value => new Date(Date.parse(value) + 3 * 3600000).toISOString().slice(0, 10);
 const periodStart = value => new Date(`${value}T00:00:00+03:00`).toISOString();
