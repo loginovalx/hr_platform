@@ -51,6 +51,7 @@ export async function localRuntime(options = {}) {
     GIGACHAT_AUTH_KEY: options.gigachat?.key ?? process.env.GIGACHAT_AUTH_KEY,
     GIGACHAT_SCOPE: process.env.GIGACHAT_SCOPE,
     GIGACHAT_MODEL: process.env.GIGACHAT_MODEL,
+    GIGACHAT_LEGACY_API: process.env.GIGACHAT_LEGACY_API,
     GIGACHAT_FETCH: options.gigachat?.fetch,
     DB: {
       prepare: (sql) => new Statement(sql),

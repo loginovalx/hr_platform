@@ -119,7 +119,7 @@ async function cachedRefinement(env, facts) {
   const provider = interviewProvider(env);
   if (!facts.length || provider === "local") return new Map();
   const scope = provider === "gigachat"
-    ? [env.GIGACHAT_AUTH_KEY,env.GIGACHAT_SCOPE,env.GIGACHAT_MODEL]
+    ? [env.GIGACHAT_AUTH_KEY,env.GIGACHAT_SCOPE,env.GIGACHAT_MODEL,env.GIGACHAT_LEGACY_API]
     : [env.YANDEX_API_KEY,env.YANDEX_FOLDER_ID,env.YANDEX_MODEL];
   const key = await sha(JSON.stringify([scope,facts]));
   const existing = refinementCache.get(key);

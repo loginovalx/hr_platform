@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Кадры · Горький
-  version: 1.3.0
+  version: 1.4.0
   description: Контракт муниципального подбора. Идентификаторы непрозрачные. Даты ISO 8601. Для PDF, DOCX и TXT до 5 МБ используйте
     multipart/form-data. В этом формате answers — JSON-строка.
 servers:
@@ -1765,6 +1765,9 @@ paths:
       - name: priority
         in: query
         schema: {type: string, enum: ['on'], description: 'Требует vacancyId'}
+      - {name: from, in: query, schema: {type: string, format: date}}
+      - {name: to, in: query, schema: {type: string, format: date}}
+      - {name: activity, in: query, schema: {type: string, enum: [without_action]}}
       - name: handoff
         in: query
         schema: {type: string, enum: [waiting, answered]}
@@ -4017,6 +4020,36 @@ paths:
             schema:
               type: object
               properties: {}
+  /hr/analytics/brief:
+    post:
+      summary: Выбрать до двух приоритетов по агрегатам рабочей нагрузки
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      - {name: vacancyId, in: query, schema: {type: string}}
+      - {name: from, in: query, schema: {type: string, format: date}}
+      - {name: to, in: query, schema: {type: string, format: date}}
+      responses:
+        '200':
+          description: Приоритеты, рассчитанные локально или упорядоченные GigaChat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: {type: string, enum: [local, gigachat]}
+                  priorities:
+                    type: array
+                    maxItems: 2
+                    items: {type: string, enum: [handoffs, first_action, timing]}
+                  facts:
+                    type: object
+                    properties:
+                      withoutAction: {type: integer}
+                      handoffsWaiting: {type: integer}
+                      handoffsOverdue: {type: integer}
+                      medianMinutes: {type: [number, 'null']}
+                      measuredApplications: {type: integer}
   /hr/analytics:
     get:
       tags:
@@ -4031,6 +4064,9 @@ paths:
               schema:
                 type: object
                 properties:
+                  operations:
+                    $ref: '#/components/schemas/OperationsAnalytics'
+                  canUseGigaChat: {type: boolean}
                   departures:
                     description: Агрегаты увольнений для администратора
                     type: array
@@ -4192,6 +4228,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /hr/archive-previews:
+    post:
+      summary: Найти датированные события в архивном тексте или файле
+      description: Только предварительный разбор. История сохраняется отдельным запросом после проверки.
+      security: [{staffCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/StaffIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [candidateId, text]
+              properties:
+                candidateId: {type: string}
+                text: {type: string, maxLength: 20000}
+          multipart/form-data:
+            schema:
+              type: object
+              required: [candidateId]
+              properties:
+                candidateId: {type: string}
+                resumeFile: {type: string, format: binary}
+                text: {type: string, maxLength: 20000}
+      responses:
+        '200':
+          description: Редактируемые события и отпечаток исходника
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, sourceDigest, readable, truncated]
+                properties:
+                  title: {type: [string, 'null']}
+                  events: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/ArchiveEvent'}}
+                  sourceDigest: {type: string}
+                  readable: {type: boolean}
+                  truncated: {type: boolean}
   /hr/archive-documents/{id}:
     parameters:
     - $ref: '#/components/parameters/RecordId'
@@ -4226,6 +4301,7 @@ paths:
                 properties:
                   candidateId: {type: string}
                   confirmDuplicate: {type: boolean}
+                sourceDigest: {type: string}
           multipart/form-data:
             schema:
               type: object
@@ -4239,6 +4315,7 @@ paths:
                 deliveryId: {type: string, maxLength: 250}
                 events: {type: string, description: JSON-массив событий}
                 confirmDuplicate: {type: string, enum: ['on']}
+                sourceDigest: {type: string}
               anyOf:
               - required: [text]
               - required: [resumeFile]
@@ -4734,6 +4811,39 @@ components:
       required: true
       schema: {type: string, maxLength: 140}
   schemas:
+    OperationsAnalytics:
+      type: object
+      properties:
+        withoutAction: {type: integer, description: Открытые отклики без действия по этапу после регистрации}
+        firstAction:
+          type: object
+          properties:
+            samples: {type: integer}
+            medianMinutes: {type: [number, 'null']}
+        handoffs:
+          type: object
+          properties:
+            waiting: {type: integer}
+            overdue: {type: integer}
+            answered: {type: integer}
+        channels:
+          type: array
+          items:
+            type: object
+            properties:
+              channel: {type: string}
+              received: {type: integer}
+              withoutAction: {type: integer}
+    ArchiveEvent:
+      type: object
+      required: [position, note]
+      properties:
+        position: {type: string, maxLength: 150}
+        date: {type: [string, 'null']}
+        note: {type: string, maxLength: 1200}
+        type: {type: string, enum: [application, interview, decision, other]}
+        outcome: {type: string, enum: [hired, rejected, withdrawn, pending]}
+        excerpt: {type: string, maxLength: 500}
     RequisitionFields:
       type: object
       required: [title, description]
@@ -4826,15 +4936,7 @@ components:
           type: array
           maxItems: 20
           items:
-            type: object
-            required: [position, note]
-            properties:
-              position: {type: string, maxLength: 150}
-              type: {type: string, enum: [application, interview, decision, other]}
-              outcome: {type: string, enum: [hired, rejected, withdrawn, pending]}
-              excerpt: {type: string, maxLength: 500}
-              date: {type: [string, 'null']}
-              note: {type: string, maxLength: 1200}
+            $ref: '#/components/schemas/ArchiveEvent'
     IntakeTriageStatus:
       type: string
       enum: [review_first, clarify, check_source, confirmed_gap, manual_review, processing, closed]

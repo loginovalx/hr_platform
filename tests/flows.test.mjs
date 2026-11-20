@@ -82,6 +82,105 @@ test("delivery retries are stable across batches and archive history stays out o
   assert.equal((await hr("/hr/archive-documents",post(form,200))).documentId,attached.documentId);
 });
 
+test("archive preview reads the three dated entries and fills an already imported document once", async t => {
+  const {hr}=await fixture(t);
+  const person=await hr("/hr/candidates",post({fullName:"Учебный Кандидат Архивный"},201));
+  const source=[
+    "ФИО: Учебный Кандидат Архивный",
+    "История общения с кандидатом", "Откликнулся",
+    "Консультант отдела профессионального развития", "16 сентября 2026", "",
+    "Начальник отдела внутреннего финансового контроля, аудита и закупок", "10 сентября 2026", "",
+    "Начальник отдела внутреннего финансового контроля, аудита и закупок", "6 августа 2026",
+    "Аналитик", "31 февраля 2026"
+  ].join("\n");
+  const form=()=>{
+    const body=new FormData();
+    body.set("candidateId",person.candidateId);
+    body.set("title","Учебный № 154");
+    body.set("sourceAccount","Учебная папка");
+    body.set("deliveryId","154");
+    body.set("resumeFile",new File([source],"История № 154.txt"));
+    return body;
+  };
+  const empty=await hr("/hr/archive-documents",post(form(),201));
+  const path="/hr/candidates/"+person.candidateId;
+  const preview=await hr("/hr/archive-previews",post(form()));
+  assert.deepEqual(preview.events.map(x=>x.date),["2026-09-16","2026-09-10","2026-08-06"]);
+  assert.equal(new Set(preview.events.map(x=>x.position)).size,2);
+  assert.ok(preview.events.every(x=>source.includes(x.excerpt) && x.type==="application"));
+  assert.equal((await hr(path)).archiveDocuments[0].events.length,0);
+  const reviewed=form();
+  reviewed.set("events",JSON.stringify(preview.events));
+  reviewed.set("sourceDigest",preview.sourceDigest);
+  const stale=form();
+  stale.set("resumeFile",new File([source+"\nИзменённый источник."],"История № 154.txt"));
+  stale.set("sourceDigest",preview.sourceDigest);
+  assert.equal((await hr("/hr/archive-documents",post(stale,409))).code,"archive_source_changed");
+  await hr("/hr/archive-documents",post(reviewed,200));
+  const repeated=await hr("/hr/archive-documents",post(reviewed,200));
+  assert.equal(repeated.documentId,empty.documentId);
+  const history=(await hr(path)).archiveDocuments;
+  assert.equal(history.length,1);
+  assert.equal(history[0].events.length,3);
+  assert.equal((await hr("/hr/analytics")).totals.received,0);
+  const arrows=await hr("/hr/archive-previews",post({candidateId:person.candidateId,text:
+    "История:\r\nКонсультант\r\n→ Интервью, 05.03.24\r\n→ Отказ, 15.03.2024"}));
+  assert.deepEqual(arrows.events.map(({date,type})=>[date,type]),[["2024-03-05","interview"],["2024-03-15","decision"]]);
+});
+
+test("operations analytics isolate archive records and GigaChat prioritizes only aggregate signals", async t => {
+  let modelCalls=0;
+  const {hr,server}=await fixture(t,"0",{departmentPassword:"department-pass",gigachat:{
+    key:"analytics-test-giga",fetch:async (url,init)=>{
+      if(url.endsWith("/oauth"))return Response.json({access_token:"model-test",expires_at:Math.floor(Date.now()/1000)+1800});
+      modelCalls++;
+      const request=JSON.parse(init.body);
+      const metrics=JSON.parse(request.messages[1].content);
+      assert.equal(metrics.withoutAction,1);
+      assert.equal(metrics.handoffsWaiting,1);
+      assert.doesNotMatch(init.body,/Секретное имя|candidate@example.test|Секретный текст/);
+      return Response.json({choices:[{message:{content:'{"priorities":["handoffs","made_up","first_action","handoffs"]}'}}]});
+    }
+  }});
+  const vacancy=await publish(hr);
+  const add=()=>hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Секретное имя",
+    contact:"candidate@example.test",resumeText:"Секретный текст и SQL"},201));
+  const first=await add();
+  await add();
+  await stage(hr,first.applicationId,"start_review",0);
+  const baseDate=new Date(Date.now()-3*86400000).toISOString();
+  const reviewedAt=new Date(Date.parse(baseDate)+2*3600000).toISOString();
+  await server.env.DB.prepare("UPDATE records SET data=json_set(data,'$.acceptedAt',?) WHERE kind='application' AND id=?")
+    .bind(baseDate,first.applicationId).run();
+  await server.env.DB.prepare("UPDATE records SET sort=? WHERE kind='stage_event' AND scope=? AND json_extract(data,'$.action')='start_review'")
+    .bind(reviewedAt,first.applicationId).run();
+  await hr("/hr/applications/"+first.applicationId+"/handoff",post({assigneeId:"department",dueAt:new Date(Date.now()+86400000).toISOString()},201));
+  const person=await hr("/hr/candidates",post({fullName:"Учебный Архив"},201));
+  await hr("/hr/archive-documents",post({candidateId:person.candidateId,title:"Историческая запись",sourceAccount:"Папка",text:"Историческая запись"},201));
+  const snapshot=await hr("/hr/analytics?vacancyId="+vacancy.vacancyId);
+  assert.equal(snapshot.totals.received,2);
+  assert.equal(snapshot.operations.withoutAction,1);
+  assert.equal(snapshot.operations.firstAction.samples,1);
+  assert.equal(snapshot.operations.firstAction.medianMinutes,120);
+  assert.equal(snapshot.operations.handoffs.waiting,1);
+  assert.equal((await hr("/hr/applications?activity=without_action&vacancyId="+vacancy.vacancyId)).items.length,1);
+  const noData=await hr("/hr/analytics?to=2000-01-02");
+  assert.deepEqual(noData.operations.firstAction,{samples:0,medianMinutes:null});
+  assert.equal(noData.operations.withoutAction,0);
+  assert.equal(modelCalls,0);
+  const summaryPath="/hr/analytics/brief?vacancyId="+vacancy.vacancyId;
+  const result=await hr(summaryPath,post({}));
+  assert.equal(result.source,"gigachat");
+  assert.deepEqual(result.priorities,["handoffs","first_action"]);
+  assert.deepEqual(await hr(summaryPath,post({})),result);
+  assert.equal(modelCalls,1);
+  await stage(hr,first.applicationId,"invite_interview",1);
+  const local=await hr("/hr/analytics/brief?to=2000-01-02",post({}));
+  assert.equal(local.source,"local");
+  assert.deepEqual(local.priorities,[]);
+  assert.equal(modelCalls,1);
+});
+
 test("search finds guests immediately and normalizes profile filters without merging names", async t => {
   const {hr,client}=await fixture(t);
   const vacancy=await publish(hr,{...draft,testQuestions:[]});

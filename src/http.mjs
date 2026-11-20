@@ -58,7 +58,7 @@ async function hrApplications(ctx, method, p) {
   if (p.length === 1) {
     if (method === "POST") return receiveStaffApplication(ctx);
     if (method !== "GET") missing();
-    const { vacancyId } = periodFilter(ctx);
+    const { vacancyId,from,to } = periodFilter(ctx);
     const q = field(ctx.url.searchParams.get("q"), "q", 160);
     const stage = ctx.url.searchParams.get("stage") || "";
     const channel = ctx.url.searchParams.get("channel") || "";
@@ -66,6 +66,11 @@ async function hrApplications(ctx, method, p) {
     const params = [];
     vacancyScope(ctx, "scope", conditions, params);
     if (vacancyId) { conditions.push("scope=?"); params.push(vacancyId); }
+    if (from) { conditions.push("sort>=?");params.push(periodStart(from)); }
+    if (to) { conditions.push("sort<=?");params.push(periodEnd(to)); }
+    if (ctx.url.searchParams.get("activity")==="without_action") {
+      conditions.push(`json_extract(data,'$.stage.outcome') IS NULL AND (${firstStageAction("records.id","coalesce(json_extract(records.data,'$.acceptedAt'),records.sort)")}) IS NULL`);
+    }
     if (q) { conditions.push("instr(json_extract(data,'$.searchName'),?)>0"); params.push(lowered(q)); }
     if (stageOrder.includes(stage)) { conditions.push("json_extract(data,'$.stage.currentStage')=? AND json_extract(data,'$.stage.outcome') IS NULL"); params.push(stage); }
     if (["hired","rejected"].includes(stage)) { conditions.push("json_extract(data,'$.stage.outcome')=?"); params.push(stage); }
@@ -148,25 +153,23 @@ async function receiveStaffApplication(ctx) {
 }
 async function archiveDocument(ctx) {
   const b = ctx.body;
-  if (!safePath(b.candidateId)) invalid("candidateId", "required", "Выберите профиль кандидата.");
-  const person = await get(ctx, "candidate", b.candidateId);
+  const {person,text,attachment,fileDigest,sourceDigest}=await archiveSource(ctx);
+  const reviewedSource=field(b.sourceDigest,"sourceDigest",64);
+  if (reviewedSource && reviewedSource!==sourceDigest) fail(409,"archive_source_changed","Исходник изменился. Разберите его снова.");
   const title = field(b.title, "title", 180, true);
-  const imported = await prepareResume({...ctx,body:{resumeText:b.text,resumeFile:b.resumeFile}},true);
-  const text = imported.text;
-  const attachment = imported.attachment;
-  const fileDigest = attachment && await sha(attachment.bytes);
   const sourceAccount = field(b.sourceAccount, "sourceAccount", 160, true);
   const deliveryId = field(b.deliveryId, "deliveryId", 250);
   const education = field(b.education,"education",500);
   const additionalEducation = field(b.additionalEducation,"additionalEducation",500);
-  const events = collection(b.events ?? [], "events", 20).map((entry, i) => {
+  const sourceText=text.replace(/\r\n?/g,"\n");
+  const events = collection(b.events ?? [], "events", maxArchiveEvents).map((entry, i) => {
     const prefix = `events.${i}`;
     const type = field(entry?.type,prefix+".type",25);
     const outcome = field(entry?.outcome,prefix+".outcome",25);
-    const excerpt = field(entry?.excerpt,prefix+".excerpt",500);
+    const excerpt = field(entry?.excerpt,prefix+".excerpt",500).replace(/\r\n?/g,"\n");
     if (type && !["application","interview","decision","other"].includes(type)) invalid(prefix+".type","invalid_type","Выберите вид архивного события.");
     if (outcome && !["hired","rejected","withdrawn","pending"].includes(outcome)) invalid(prefix+".outcome","invalid_outcome","Выберите известный итог.");
-    if (excerpt && !text.includes(excerpt)) invalid(prefix+".excerpt","excerpt_not_found","Используйте точный фрагмент из текста документа.");
+    if (excerpt && !sourceText.includes(excerpt)) invalid(prefix+".excerpt","excerpt_not_found","Используйте точный фрагмент из текста документа.");
     return {
       position:field(entry?.position,prefix+".position",limits.title,true),date:dateValue(entry?.date,prefix+".date"),
       note:field(entry?.note,prefix+".note",limits.notes,true),
@@ -181,17 +184,39 @@ async function archiveDocument(ctx) {
   const id = await sha(JSON.stringify([sourceAccount, deliveryId || anonymousMatch]));
   const storageId = attachment ? uuid() : null;
   const file = attachment ? {name:attachment.name,size:attachment.size,type:attachment.type} : null;
-  const document = make({ title, text, searchText:lowered(text), education, educationSearch:lowered(education),
+  const document = make({ title, text, sourceDigest, searchText:lowered(text), education, educationSearch:lowered(education),
     additionalEducation, additionalEducationSearch:lowered(additionalEducation),
     sourceAccount, deliveryId: deliveryId || null, events, digest, storageId, attachment:file,
     addedBy: ctx.actor.name, addedAt: isoNow() }, person.id, isoNow(), id);
   const repeat = previous => {
+    if (previous.scope!==person.id) fail(409,"delivery_changed","Номер этого документа уже связан с другим профилем.");
+    if (reviewedSource && previous.sourceDigest===sourceDigest && JSON.stringify(previous.events.map(entry=>JSON.stringify(entry)).sort())===JSON.stringify(canonicalEvents)) {
+      return result({documentId:id,duplicate:true});
+    }
     if (!deliveryId && b.confirmDuplicate !== true && b.confirmDuplicate !== "on") fail(409,"archive_match",
       `В истории уже есть документ "${previous.title}". Сверьте его и подтвердите повтор или укажите номер отдельного документа.`);
     if (deliveryId && previous.digest !== digest) fail(409, "delivery_changed", "Этот архивный документ уже зарегистрирован с другими сведениями.");
     return result({ documentId: id, duplicate: true });
   };
   const previous = await get(ctx, "archive_document", id, false);
+  if (previous?.scope===person.id && reviewedSource && events.length && !previous.events.length && previous.text===text) {
+    const stored = !previous.sourceDigest && previous.storageId && await ctx.env.BUCKET?.get(previous.storageId);
+    const matches = previous.sourceDigest===sourceDigest || (!previous.sourceDigest &&
+      (stored ? await sha(await new Response(stored.body).arrayBuffer())===fileDigest : !previous.storageId && !attachment));
+    if (matches) {
+      // A compare-and-set protects the already reviewed events from another edit.
+      const fields=[person.id,previous.title,previous.text,canonicalEvents,fileDigest];
+      if (previous.education || previous.additionalEducation) fields.push(previous.education || "",previous.additionalEducation || "");
+      const filled={...previous,events,sourceDigest,digest:await sha(JSON.stringify(fields))};
+      try {
+        return await commit(ctx,[...expect(ctx,"archive_document",previous),update(ctx,"archive_document",filled)],
+          result({documentId:id,duplicate:false,historyFilled:true}));
+      } catch(error) {
+        if (error.code!=="version_conflict") throw error;
+        return commit(ctx,[],repeat(await get(ctx,"archive_document",id)));
+      }
+    }
+  }
   if (previous) return commit(ctx, [], repeat(previous));
   if (attachment) await ctx.env.BUCKET.put(storageId,attachment.bytes);
   try {
@@ -334,6 +359,10 @@ async function hrRoutes(ctx, method, p) {
   if (p[0] === "applications") return hrApplications(ctx, method, p);
   if (action === "email-imports" && method === "POST") return receiveMail(ctx);
   if (action === "application-imports" && method === "POST") return importBatch(ctx);
+  if (action === "archive-previews" && method === "POST") {
+    if (ctx.actor.vacancyIds) denied();
+    return previewArchive(ctx);
+  }
   if (action === "archive-documents" && method === "POST") {
     if (ctx.actor.vacancyIds) denied();
     return archiveDocument(ctx);
@@ -411,6 +440,7 @@ async function hrRoutes(ctx, method, p) {
     if (p.length === 3 && p[2] === "mark-sent" && method === "POST") return markSent(ctx, p[1]);
   }
   if (action === "analytics" && method === "GET") return analytics(ctx);
+  if (action === "analytics/brief" && method === "POST") return analyticsBrief(ctx);
   missing();
 }
 async function renderResult(ctx, response) {

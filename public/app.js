@@ -415,8 +415,11 @@ async function applicationList() {
   const totals=r.triageTotals;
   const queues=[["",`Вся очередь (${Object.values(totals).reduce((a,b)=>a+b,0)})`],
     ...Object.entries(intakeStatuses).map(([key,[label]])=>[key,`${label} (${totals[key]||0})`])];
-  return `${heading("Отклики","",btn("Импортировать",'data-action="intake-options"',"secondary","upload")+btn("Добавить отклик",'data-action="import-application"',"primary","plus"))}
+  const context=[q.get("activity")==="without_action"?"Без действий по этапу":"",
+    q.get("from")?"С "+date(q.get("from")):"",q.get("to")?"По "+date(q.get("to")):""].filter(Boolean);
+  return `${heading("Отклики",context.join(" · "),btn("Импортировать",'data-action="intake-options"',"secondary","upload")+btn("Добавить отклик",'data-action="import-application"',"primary","plus"))}
   <form class="card pad stack-sm queue-filters" data-form="app-filters">
+    ${["activity","from","to"].filter(key=>q.get(key)).map(key=>`<input type="hidden" name="${key}" value="${esc(q.get(key))}">`).join("")}
     <div class="queue-main">${searchField(q.get("q"),"Поиск по кандидату")}
     ${vacancySelect(menu,q.get("vacancyId"))}
     ${selectField("triage","Очередь разбора",queues,q.get("triage"))}</div>
@@ -428,7 +431,7 @@ async function applicationList() {
     <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}
       ${btn("Сохранить фильтры",'data-action="save-filters"',"quiet")}${listSettings("kadry-filters",null) ? btn("Мои фильтры",'data-action="restore-filters"',"quiet") : ""}</div>
   </form>
-  <section class="card">${applicationTable(r.items,false,["q","vacancyId","stage","channel","triage","handoff"].some(key=>q.get(key)))}${pagination(r.nextCursor)}</section>`;
+  <section class="card">${applicationTable(r.items,false,["q","vacancyId","stage","channel","triage","handoff","activity","from","to"].some(key=>q.get(key)))}${pagination(r.nextCursor)}</section>`;
 }
 function resumeFields(required) {
   return `<div class="form-block stack-sm"><h3>Резюме${required ? " *" : ""}</h3>
@@ -707,6 +710,66 @@ async function candidateView(id) {
 }
 const archiveTypes={application:"Отклик",interview:"Интервью",decision:"Решение",other:"Другое"};
 const archiveOutcomes={hired:"Принят",rejected:"Отказ",withdrawn:"Отозван",pending:"В работе"};
+function archiveEventRow(event={}) {
+  const id=crypto.randomUUID();
+  return `<div class="criterion stack-sm" data-archive-event>
+    ${pair(input("","Должность",{id:id+"_position",required:true,max:150,value:event.position,attrs:'data-event="position"'}),
+      input("","Дата",{id:id+"_date",type:"date",value:event.date,attrs:'data-event="date"'}))}
+    ${pair(input("","Вид",{id:id+"_type",content:choose("",[["","Не указан"],...Object.entries(archiveTypes)],event.type,`id="${id}_type" data-event="type"`)}),
+      input("","Итог",{id:id+"_outcome",content:choose("",[["","Не указан"],...Object.entries(archiveOutcomes)],event.outcome,`id="${id}_outcome" data-event="outcome"`)}))}
+    ${input("","Событие",{id:id+"_note",required:true,max:1200,value:event.note,attrs:'data-event="note"'})}
+    ${input("","Фрагмент документа",{id:id+"_excerpt",type:"textarea",rows:2,max:500,optional:true,value:event.excerpt,attrs:'data-event="excerpt"'})}
+    <div>${btn("Убрать событие",'data-action="remove-archive-event"',"quiet")}</div></div>`;
+}
+function archiveEventKey(event) {
+  return JSON.stringify([event.position.trim().toLowerCase(),event.date,event.type||""]);
+}
+async function loadArchivePreview(form) {
+  const status=form.querySelector("[data-archive-status]");
+  const button=form.querySelector('[data-action="archive-preview"]');
+  const submitButton=form.querySelector('[type="submit"]');
+  const run=String((Number(form.dataset.previewRun)||0)+1);
+  form.dataset.previewRun=run;
+  const body=new FormData();
+  const file=form.elements.resumeFile.files[0];
+  const text=form.elements.text.value;
+  if (file) body.set("resumeFile",file);
+  body.set("text",text);
+  body.set("candidateId",form.dataset.id);
+  status.textContent="Читаем документ…";
+  button.disabled=true;
+  submitButton.disabled=true;
+  try {
+    const preview=await api("/hr/archive-previews",{method:"POST",body});
+    if (!form.isConnected || form.dataset.previewRun!==run) return;
+    if (form.elements.resumeFile.files[0]!==file || form.elements.text.value!==text) {
+      status.textContent="Исходник изменён. Повторите разбор.";
+      return;
+    }
+    if (!form.elements.title.value.trim()&&preview.title) form.elements.title.value=preview.title;
+    const list=form.querySelector("[data-archive-events]");
+    const existing=new Set([...list.children].map(row=>archiveEventKey(Object.fromEntries([...row.querySelectorAll("[data-event]")].map(el=>[el.dataset.event,el.value])))));
+    for(const event of preview.events) {
+      if(list.children.length>=20)break;
+      const key=archiveEventKey(event);
+      if(existing.has(key))continue;
+      existing.add(key);
+      list.insertAdjacentHTML("beforeend",archiveEventRow(event));
+    }
+    form.elements.sourceDigest.value=preview.events.length?preview.sourceDigest:"";
+    status.textContent=preview.events.length
+      ? `Найдено событий: ${number(preview.events.length)}. Проверьте даты, должности и фрагменты перед сохранением.${preview.truncated?" Проверьте, есть ли продолжение в исходнике.":""}`
+      : preview.readable?"В тексте не найдено записей поддерживаемого формата. Можно добавить события вручную."
+        :"Не удалось прочитать текст. Вставьте его из документа и повторите разбор.";
+  } catch(error) {
+    if (form.dataset.previewRun===run) status.textContent=error.message||"Не удалось разобрать документ.";
+  } finally {
+    if (form.dataset.previewRun===run) {
+      button.disabled=false;
+      submitButton.disabled=false;
+    }
+  }
+}
 function archiveDocumentView(doc) {
   const events=[...doc.events].sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));
   return `<details class="criterion"><summary>${esc(doc.title)} · ${esc(doc.sourceAccount)}</summary>
@@ -734,6 +797,32 @@ function departureSummary(rows) {
   return `<section class="card"><div class="table-title"><h2>Увольнения по подразделениям</h2></div>
     ${entries.length ? table([["Подразделение",32],["Месяц",16],["Основание",39],["Ушли",13]],entries) : empty("Увольнений за период нет")}</section>`;
 }
+function operationsPanel(ops,p,canUseGigaChat) {
+  const filters=Object.fromEntries(["vacancyId","from","to"].map(key=>[key,p.get(key)]));
+  const waiting=pagePath("/hr/applications",{...filters,handoff:"waiting"});
+  const idle=pagePath("/hr/applications",{...filters,activity:"without_action"});
+  const rows=ops.channels.map(row=>({cells:[esc(sourceNames[row.channel]||sourceNames.unknown),number(row.received),number(row.withoutAction)]}));
+  const briefQuery=new URLSearchParams(Object.entries(filters).filter(([,value])=>value));
+  return `<section class="card pad stack">
+    ${cardHead("Рабочая нагрузка","По откликам выбранного периода. Архивная история учитывается отдельно.",
+      ops.channels.length ? btn(canUseGigaChat?"Приоритеты с GigaChat":"Показать приоритеты",`data-action="analytics-brief" data-query="${esc(briefQuery)}"`,"secondary","bars"):"")}
+    <div class="dashboard-grid">
+      <section class="criterion stack-sm"><h3>Первое действие</h3>
+        ${meta([["Открытые без действий",number(ops.withoutAction)],["Медиана от регистрации",ops.firstAction.medianMinutes==null?"Нет замеров":number(ops.firstAction.medianMinutes)+" мин"],
+          ["Откликов с замером",number(ops.firstAction.samples)]])}
+        <p class="muted small">Считается первое записанное действие по этапу.</p>
+        ${ops.withoutAction?link(idle,"Открыть очередь без действий","quiet btn-sm"):""}
+      </section>
+      <section class="criterion stack-sm"><h3>Ответы подразделений</h3>
+        ${meta([["Ожидаем",number(ops.handoffs.waiting)],["Из них просрочено",number(ops.handoffs.overdue)],["Получен ответ",number(ops.handoffs.answered)]])}
+        ${ops.handoffs.waiting?link(waiting,"Открыть ожидающие карточки","quiet btn-sm"):""}
+      </section>
+    </div>
+    <div class="note stack-sm" data-analytics-brief aria-live="polite" hidden></div>
+    <div class="stack-sm"><h3>Нагрузка по источникам</h3>
+      ${rows.length?table(["Источник","Поступило","Без действий"],rows,{tight:true}):'<p class="muted small">За этот период откликов нет.</p>'}</div>
+  </section>`;
+}
 async function analyticsView() {
   const p=new URLSearchParams(location.search);
   const [stats,menu]=await Promise.all([getJSON("/hr/analytics"+location.search),vacancyMenu(p.get("vacancyId"))]);
@@ -744,6 +833,7 @@ async function analyticsView() {
   ${input("from","С даты",{type:"date",value:p.get("from")})}${input("to","По дату",{type:"date",value:p.get("to")})}
   <div class="row wrap">${submit("Применить","funnel")}${link("/hr/analytics","Сбросить","quiet")}</div>${errors}</form>
   ${metrics(stats.totals)}
+  ${operationsPanel(stats.operations,p,stats.canUseGigaChat)}
   <div class="dashboard-grid"><section class="card pad">${cardHead("Динамика откликов",stats.series.length===31?"Первые 31 день периода":"Отклики по дням")}${spark(stats.series)}</section>
   <section class="card pad">${cardHead("Воронка найма","Дошли до этапа",tile("funnel"))}${funnelChart(stats.funnel,stats.totals.received)}</section></div>
   <section class="card"><div class="table-title"><h2>Детализация по этапам</h2></div>${table([["Этап",30],["Дошли",23],["Сейчас на этапе",25],["Отказ",22]],data)}</section>
@@ -1176,7 +1266,7 @@ const submitHandlers = {
     f.set("events",JSON.stringify(events));
     if(!f.get("resumeFile")?.size)f.delete("resumeFile");
     const result=await mutate(form,"document","/hr/archive-documents","POST",f);
-    toast(result.duplicate?"Документ уже есть в истории.":"Архивный документ добавлен.");
+    toast(result.historyFilled?"События добавлены в существующий документ.":result.duplicate?"Документ уже есть в истории.":"Архивный документ добавлен.");
     await go(currentPage());
   },
   async "public-application"(form) {
@@ -1359,6 +1449,30 @@ const clickActions = {
     await go(currentPage());
   },
   "print-report"(){window.print();},
+  async "analytics-brief"(target) {
+    const slot=target.closest("section.card").querySelector("[data-analytics-brief]");
+    slot.hidden=false;
+    slot.textContent="Оцениваем приоритеты…";
+    try {
+      const query=new URLSearchParams(target.dataset.query);
+      const result=await api("/hr/analytics/brief?"+query,{method:"POST",body:{}});
+      const facts=result.facts;
+      const filters=Object.fromEntries(query);
+      const messages={
+        handoffs:`Проверьте ожидающие карточки подразделений. В ожидании: ${number(facts.handoffsWaiting)}, просрочено: ${number(facts.handoffsOverdue)}.`,
+        first_action:`Разберите открытые отклики без первого действия: ${number(facts.withoutAction)}.`,
+        timing:`Сверьте время первичного разбора. Медиана: ${number(facts.medianMinutes)} мин по ${number(facts.measuredApplications)} откликам.`
+      };
+      slot.innerHTML=`<strong>${result.source==="gigachat"?"Приоритеты по данным и GigaChat":"Приоритеты по данным"}</strong>
+        ${result.priorities.length?`<ol>${result.priorities.map(key=>`<li>${esc(messages[key])}
+          ${key==="handoffs"?link(pagePath("/hr/applications",{...filters,handoff:"waiting"}),"Открыть очередь","quiet btn-sm"):
+            key==="first_action"?link(pagePath("/hr/applications",{...filters,activity:"without_action"}),"Открыть очередь","quiet btn-sm"):""}</li>`).join("")}</ol>`:
+          '<p>За этот период нет задач, требующих разбора.</p>'}`;
+    } catch(error) {
+      slot.textContent="Приоритеты недоступны. Проверьте показатели в таблице выше.";
+      throw error;
+    }
+  },
   "save-filters"(target) {
     localStorage.setItem("kadry-filters",JSON.stringify(Object.fromEntries(new FormData(target.closest("form")))));
     toast("Фильтры сохранены в этом браузере.");
@@ -1368,23 +1482,20 @@ const clickActions = {
   "archive-event"(target) {
     const list=target.closest("form").querySelector("[data-archive-events]");
     if(list.children.length>=20)return;
-    const id=crypto.randomUUID();
-    list.insertAdjacentHTML("beforeend",`<div class="criterion stack-sm" data-archive-event>
-      ${pair(input("","Должность",{id:id+"_position",required:true,max:150,attrs:'data-event="position"'}),input("","Дата",{id:id+"_date",type:"date",attrs:'data-event="date"'}))}
-      ${pair(input("","Вид",{id:id+"_type",content:choose("",[["","Не указан"],...Object.entries(archiveTypes)],"",`id="${id}_type" data-event="type"`)}),
-        input("","Итог",{id:id+"_outcome",content:choose("",[["","Не указан"],...Object.entries(archiveOutcomes)],"",`id="${id}_outcome" data-event="outcome"`)}))}
-      ${input("","Событие",{id:id+"_note",required:true,max:1200,attrs:'data-event="note"'})}
-      ${input("","Фрагмент документа",{id:id+"_excerpt",max:500,optional:true,attrs:'data-event="excerpt"'})}
-      <div>${btn("Убрать событие",'data-action="remove-archive-event"',"quiet")}</div></div>`);
+    list.insertAdjacentHTML("beforeend",archiveEventRow());
     list.lastElementChild.querySelector("input").focus();
   },
   "remove-archive-event"(target){target.closest("[data-archive-event]").remove();},
+  "archive-preview"(target){return loadArchivePreview(target.closest("form"));},
   "archive-document"(target) {
     showDialog("Исторический документ",`<form class="stack" data-form="archive-document" data-id="${esc(target.dataset.id)}">
+    <input type="hidden" name="sourceDigest">
     ${input("title","Название документа",{required:true,max:180})}
     ${pair(input("sourceAccount","Папка или реестр",{required:true,max:160}),input("deliveryId","Номер документа",{optional:true,max:250}))}
     ${input("resumeFile","Исходный документ",{type:"file",attrs:'accept=".docx,.txt,.pdf"',optional:true})}
     ${input("text","Текст документа",{type:"textarea",max:20000,hint:"Вставьте текст или приложите файл."})}
+    <div class="stack-sm"><div>${btn("Найти события в документе",'data-action="archive-preview"',"secondary","search")}</div>
+    <p class="muted small" data-archive-status aria-live="polite"></p></div>
     ${input("education","Образование из документа",{max:500,optional:true})}
     ${input("additionalEducation","Доп. образование из документа",{max:500,optional:true})}
     <h3>Прежние события</h3><div class="stack-sm" data-archive-events></div>
@@ -1534,6 +1645,10 @@ document.addEventListener("keydown",e=>{
 });
 document.addEventListener("input",e=>{
   const target=e.target;
+  if (target.name==="text" && target.form?.dataset.form==="archive-document" && target.form.elements.sourceDigest.value) {
+    target.form.elements.sourceDigest.value="";
+    target.form.querySelector("[data-archive-status]").textContent="Текст изменён. Проверьте события или повторите разбор.";
+  }
   if(target.name==="title"){
     const slug=target.form?.querySelector("[data-slug-field]");
     if(slug&&!slug.dataset.edited)slug.value=convertSlug(target.value);
@@ -1543,6 +1658,12 @@ document.addEventListener("input",e=>{
 });
 document.addEventListener("change",async e=>{
   const select=e.target;
+  if (select.name==="resumeFile" && select.form?.dataset.form==="archive-document") {
+    select.form.elements.sourceDigest.value="";
+    if(select.files.length) await loadArchivePreview(select.form);
+    else select.form.querySelector("[data-archive-status]").textContent="Файл снят. Проверьте события перед сохранением.";
+    return;
+  }
   if(select.name==="resumeFiles"&&select.form?.dataset.form==="import-files"){
     const form=select.form;
     const files=[...select.files];

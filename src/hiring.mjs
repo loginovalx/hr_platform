@@ -263,16 +263,13 @@ function periodFilter(ctx, fromField = "from", toField = "to") {
 }
 async function analytics(ctx) {
   const { vacancyId, from, to } = periodFilter(ctx);
-  const conditions = ["kind='application'"];
-  const args = [];
-  vacancyScope(ctx, "scope", conditions, args);
-  if (vacancyId) { conditions.push("scope=?"); args.push(vacancyId); }
-  if (from) { conditions.push("sort >= ?"); args.push(periodStart(from)); }
-  if (to) { conditions.push("sort <= ?"); args.push(periodEnd(to)); }
+  const cohort = applicationCohort(ctx,{vacancyId,from,to});
+  const {where,args}=cohort;
+  const operations=await operationsAnalytics(ctx,cohort);
   const counts = await all(ctx, `SELECT json_extract(data,'$.stage.currentStage') stage,
     json_extract(data,'$.stage.outcome') outcome, COUNT(*) total
-    FROM records WHERE ${conditions.join(" AND ")} GROUP BY stage,outcome`, ...args);
-  const reached = await all(ctx, `WITH cohort AS (SELECT id FROM records WHERE ${conditions.join(" AND ")})
+    FROM records WHERE ${where} GROUP BY stage,outcome`, ...args);
+  const reached = await all(ctx, `WITH cohort AS (SELECT id FROM records WHERE ${where})
     SELECT json_extract(e.data,'$.toStage') stage, COUNT(DISTINCT e.scope) total
     FROM cohort c JOIN records e ON e.kind='stage_event' AND e.scope=c.id
     GROUP BY stage`, ...args);
@@ -319,7 +316,7 @@ async function analytics(ctx) {
   const recentFrom = new Date(Date.parse(finish) - 6 * 86400000).toISOString().slice(0, 10);
   const start = from || recentFrom;
   const ts = await all(ctx, `SELECT date(sort,'+3 hours') day,COUNT(*) total FROM records
-    WHERE ${conditions.join(" AND ")} AND sort>=? GROUP BY day ORDER BY day LIMIT 31`, ...args, periodStart(start));
+    WHERE ${where} AND sort>=? GROUP BY day ORDER BY day LIMIT 31`, ...args, periodStart(start));
   const series = [];
   for (let date = new Date(start), n = 0; day(date.toISOString()) <= finish && n < 31; date.setUTCDate(date.getUTCDate() + 1), n++) {
     const key = day(date.toISOString());
@@ -342,5 +339,5 @@ async function analytics(ctx) {
       WHERE ${scope.join(" AND ")} GROUP BY month,department,category
       ORDER BY month DESC,total DESC,department,category`, ...values);
   }
-  return result({ totals, funnel, surveys, series, ...(departures ? { departures } : {}) });
+  return result({ totals, funnel, surveys, series, operations, canUseGigaChat:Boolean(ctx.env.GIGACHAT_AUTH_KEY?.trim()), ...(departures ? { departures } : {}) });
 }

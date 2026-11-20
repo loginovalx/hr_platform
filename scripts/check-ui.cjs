@@ -53,7 +53,8 @@ async function visit(page,url,route){
 
 function syntheticDocx(text) {
   const name=Buffer.from("word/document.xml");
-  const xml=Buffer.from(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`);
+  const paragraphs=text.split("\n").map(line=>`<w:p><w:r><w:t>${line}</w:t></w:r></w:p>`).join("");
+  const xml=Buffer.from(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs}</w:body></w:document>`);
   const compressed=deflateRawSync(xml);
   const checksum=crc32(xml);
   const local=Buffer.alloc(30);
@@ -161,7 +162,7 @@ async function run(){
     await dialog.getByRole('link',{name:'Открыть отклик'}).last().click();
     await page.getByRole('heading',{name:'Аудитов Игорь'}).waitFor();
     await page.getByRole('link',{name:'Резюме',exact:true}).click();
-    await page.getByText(/Готовил проекты муниципальных правовых актов/).waitFor();
+    await page.locator('.resume').filter({hasText:/Готовил проекты муниципальных правовых актов/}).waitFor();
     await visit(page,server.url,'/hr/applications?q='+encodeURIComponent('Аудитова'));
     await page.getByRole('link',{name:'Аудитова Кира',exact:true}).click();
     await page.getByRole('heading',{name:'Аудитова Кира'}).waitFor();
@@ -196,6 +197,41 @@ async function run(){
     await page.getByRole('link',{name:'Назад к кандидату',exact:true}).click();
     await page.waitForURL('**/hr/candidates/candidate_demo_21');
     await page.getByRole('heading',{name:'Профиль кандидата'}).waitFor();
+    const readTotals=async ()=>(await (await page.request.get(server.url+'/api/v1/hr/analytics')).json()).totals.received;
+    const countBeforeArchive=await readTotals();
+    const archive={
+      name:'Учебная история № 154.docx',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      buffer:syntheticDocx([
+        'История общения с кандидатом','Откликнулась',
+        'Консультант учебного отдела','16 сентября 2026',
+        'Начальник учебного отдела','10 сентября 2026',
+        'Начальник учебного отдела','6 августа 2026'
+      ].join('\n'))
+    };
+    for(let attempt=0;attempt<2;attempt++){
+      await page.getByRole('button',{name:'Добавить документ'}).click();
+      dialog=page.locator('dialog[open]');
+      await dialog.getByLabel('Папка или реестр').fill('Учебная папка');
+      await dialog.getByLabel('Исходный документ').setInputFiles(archive);
+      await dialog.getByText(/Найдено событий: 3/).waitFor();
+      assert.equal(await dialog.locator('[data-archive-event]').count(),3);
+      assert.equal(await dialog.getByLabel('Фрагмент документа').first().inputValue(),'Консультант учебного отдела\n16 сентября 2026');
+      await dialog.getByRole('button',{name:'Сохранить документ'}).click();
+      await page.locator('dialog[open]').waitFor({state:'hidden'});
+      await page.getByText('Учебная история № 154 · Учебная папка',{exact:true}).waitFor();
+    }
+    const archiveCard=page.getByText('Учебная история № 154 · Учебная папка',{exact:true});
+    await archiveCard.click();
+    assert.equal(await page.locator('.archive-doc-body .history li').count(),3);
+    assert.equal(await archiveCard.count(),1);
+    assert.equal(await readTotals(),countBeforeArchive);
+    await visit(page,server.url,'/hr/analytics');
+    await page.getByRole('heading',{name:'Рабочая нагрузка'}).waitFor();
+    await page.getByRole('button',{name:'Показать приоритеты'}).click();
+    await page.getByText('Приоритеты по данным',{exact:true}).waitFor();
+    await page.getByRole('link',{name:'Открыть очередь без действий'}).click();
+    await page.waitForURL('**/hr/applications?activity=without_action');
+    await page.getByText('Без действий по этапу',{exact:true}).waitFor();
     await visit(page,server.url,'/hr/applications/app_demo_21?tab=report');
     await page.emulateMedia({media:'print'});
     assert.ok(await page.locator('#print-report').isVisible());
@@ -241,7 +277,7 @@ async function run(){
         await measure(page,'long-name-and-vacancy',width);
       }
     }
-    console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:6,images},null,2));
+    console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:8,images},null,2));
     if(errors.size||fail.length)process.exitCode=1;
   } finally {
     await browser.close();
