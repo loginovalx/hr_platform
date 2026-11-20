@@ -8,7 +8,7 @@ const {crc32,deflateRawSync}=require('node:zlib');
 const pathname=path.resolve(__dirname,'..');
 let images;
 const candidates=['/hr/candidates','/hr/candidates/candidate_demo_21'];
-const routes=['/hr','/hr/vacancies','/hr/vacancies?view=requests','/hr/vacancies/new','/hr/vacancies/vacancy_4','/hr/applications',...['assessment','interview','resume','test','clarification','history','report','workflow'].map(s=>'/hr/applications/app_demo_21?tab='+s),...candidates,'/hr/analytics','/hr/feedback','/hr/feedback?type=voluntary_exit','/hr/news','/vacancies','/vacancies/hr-sector-consultant','/vacancies/hr-sector-consultant?apply=1'];
+const routes=['/hr','/hr/vacancies','/hr/vacancies?view=requests','/hr/vacancies/new','/hr/vacancies/vacancy_4','/hr/applications',...['assessment','interview','resume','test','clarification','report'].map(s=>'/hr/applications/app_demo_21?tab='+s),...candidates,'/hr/analytics','/hr/analytics/departures','/hr/feedback','/hr/feedback?type=voluntary_exit','/vacancies','/vacancies/hr-sector-consultant','/vacancies/hr-sector-consultant?apply=1'];
 const widths=[320,390,768,1024,1440];
 const fail=[];
 const notices=[];
@@ -88,12 +88,6 @@ async function run(){
   const directory=await fs.mkdtemp(path.join(tmpdir(),'kadry-audit-db-'));
   const {openServer}=await import(pathToFileURL(pathname+'/scripts/server.mjs').href);
   const server=await openServer({port:0,directory,seed:'1',demo:true});
-  const newsTitle='Опрос о спросе на профессиональные навыки работы с искусственным интеллектом';
-  let newPublication=false;
-  server.env.NEWS_FETCH=async url=>new Response(`<rss><channel>${url.includes('hse.ru')?
-    `<item><title>${newsTitle}</title><link>https://www.hse.ru/news/test</link><pubDate>${new Date().toUTCString()}</pubDate></item>`+
-    (newPublication ? `<item><title>Новые данные о рынке труда</title><link>https://www.hse.ru/news/test-2</link><pubDate>${new Date().toUTCString()}</pubDate></item>` : '') : ''
-  }</channel></rss>`);
   const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE||undefined});
   try{
     const page=await browser.newPage();
@@ -103,17 +97,6 @@ async function run(){
     await page.getByRole('button',{name:'Открыть демо-кабинет'}).click();
     await page.getByRole('heading',{name:'Кабинет подбора'}).waitFor();
     await page.setViewportSize({width:1440,height:900});
-    const overviewWidget=page.locator('.overview-lead [data-news-widget]');
-    await overviewWidget.getByRole('link',{name:newsTitle,exact:true}).waitFor({timeout:3000});
-    const widgetBox=await overviewWidget.boundingBox();
-    const heroBox=await page.locator('.hero').boundingBox();
-    assert.ok(widgetBox.x>=heroBox.x+heroBox.width && Math.abs(widgetBox.y-heroBox.y)<2);
-    assert.ok(widgetBox.width*widgetBox.height/(1440*900)>=0.08 && widgetBox.width*widgetBox.height/(1440*900)<=0.17);
-    const mascotSlot=overviewWidget.locator('.news-widget-mascot');
-    const mascotBox=await mascotSlot.boundingBox();
-    const storiesBox=await overviewWidget.locator('[data-news-widget-items]').boundingBox();
-    assert.ok(mascotBox.width>=70 && mascotBox.x>=storiesBox.x+storiesBox.width);
-    assert.equal(await mascotSlot.evaluate(node=>node.childElementCount),0);
     await page.setViewportSize({width:390,height:900});
     assert.equal(await page.getByRole('navigation',{name:'Кабинет HR'}).isVisible(),false);
     const mobileMenu=page.getByRole('button',{name:'Открыть меню'});
@@ -121,18 +104,12 @@ async function run(){
     assert.equal(await mobileMenu.getAttribute('aria-expanded'),'true');
     await page.keyboard.press('Escape');
     assert.equal(await mobileMenu.getAttribute('aria-expanded'),'false');
-    await visit(page,server.url,'/hr/feedback');
-    await page.locator('[data-news-bell]').click();
-    await page.locator('[data-news-widget][popover]').getByRole('link',{name:newsTitle,exact:true}).waitFor();
-    await measure(page,'news-widget-mobile',390);
     for (const width of widths){
       await page.setViewportSize({width,height:900});
       for(const route of routes){
         await visit(page,server.url,route);
-        if(route==='/hr')await overviewWidget.getByRole('link',{name:newsTitle,exact:true}).waitFor();
-        if(route==='/hr/news')await page.getByRole('link',{name:newsTitle,exact:true}).waitFor();
         await measure(page,route,width);
-        if([390,1440].includes(width)&&['/hr','/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/feedback','/hr/news','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
+        if([390,1440].includes(width)&&['/hr','/hr/applications','/hr/applications/app_demo_21?tab=interview','/hr/analytics','/hr/analytics/departures','/hr/feedback','/hr/candidates','/vacancies','/hr/vacancies/vacancy_4'].includes(route))
           await page.screenshot({path:images+'/'+width+'-'+route.replace(/[^a-z0-9]+/gi,'_')+'.png'});
       }
       await visit(page,server.url,'/hr/applications?vacancyId=vacancy_4&priority=on');
@@ -191,30 +168,22 @@ async function run(){
     await page.getByRole('link',{name:'Аудитова Кира',exact:true}).click();
     await page.getByRole('heading',{name:'Аудитова Кира'}).waitFor();
     await page.getByRole('navigation',{name:'Материалы отклика'}).getByRole('link',{name:'Вопросы для интервью'}).click();
-    await page.getByRole('button',{name:'Записать ответ'}).first().click();
-    dialog=page.locator('dialog[open]');
-    await dialog.getByLabel('Ответ',{exact:true}).fill('Профессиональная переподготовка по юриспруденции.');
-    await dialog.getByLabel('Следующий шаг').fill('Сверить диплом.');
-    await dialog.getByRole('button',{name:'Записать ответ'}).click();
-    await page.getByRole('heading',{name:'Ответы со звонков и встреч'}).waitFor();
-    await page.getByRole('link',{name:'Взаимодействие',exact:true}).click();
-    await page.getByRole('button',{name:'Передать карточку'}).click();
-    dialog=page.locator('dialog[open]');
-    await dialog.getByRole('heading',{name:'Что увидит подразделение'}).waitFor();
-    const dueDate=new Date(Date.now()+3*86400000).toISOString().slice(0,16);
-    await dialog.getByLabel('Ответить до').fill(dueDate);
-    await dialog.getByRole('button',{name:'Передать',exact:true}).click();
-    await page.getByText('Ожидает ответа подразделения.',{exact:true}).waitFor();
-    await visit(department,server.url,'/department');
-    await department.getByLabel('Результат').selectOption('clarify');
-    await department.getByLabel('Обоснование').fill('Сверить данные диплома на очной встрече.');
-    await department.getByRole('button',{name:'Ответить',exact:true}).click();
-    await department.getByText('Сверить данные диплома на очной встрече.',{exact:true}).waitFor();
-    await visit(page,server.url,'/hr/applications?handoff=answered');
-    await page.getByText('Есть ответ подразделения',{exact:true}).waitFor();
-    await page.getByRole('link',{name:'Аудитова Кира',exact:true}).click();
-    await page.getByRole('link',{name:'Взаимодействие',exact:true}).click();
-    await page.getByText('Сверить данные диплома на очной встрече.',{exact:true}).waitFor();
+    await page.locator(".interview-questions li").first().waitFor();
+    const tabs=page.getByRole("navigation",{name:"Материалы отклика"});
+    assert.equal(await tabs.getByRole("link",{name:/История|Взаимодействие/}).count(),0);
+    await page.getByRole("button",{name:"Создать профиль",exact:true}).click();
+    dialog=page.locator("dialog[open]");
+    await dialog.getByLabel("Опыт",{exact:false}).fill("Проводила первичные интервью.");
+    await dialog.getByRole("button",{name:"Создать и связать"}).click();
+    await page.getByRole("link",{name:"Открыть профиль"}).click();
+    await page.getByRole("button",{name:"Редактировать профиль"}).click();
+    dialog=page.locator("dialog[open]");
+    await dialog.getByLabel("Опыт",{exact:false}).fill("Проводила интервью и готовила отчёты.");
+    await dialog.getByRole("button",{name:"Сохранить"}).click();
+    await page.getByText("Проводила интервью и готовила отчёты.",{exact:true}).waitFor();
+    await page.getByRole("button",{name:"Удалить профиль"}).click();
+    await page.locator("dialog[open]").getByRole("button",{name:"Удалить профиль"}).click();
+    await page.getByRole("heading",{name:"Кадровый резерв"}).waitFor();
 
     await visit(page,server.url,'/hr/candidates/candidate_demo_21');
     await page.locator('table').getByRole('link',{name:'Ольга Ланская',exact:true}).click();
@@ -274,10 +243,11 @@ async function run(){
     await measure(guest,'guest-receipt',390);
     await visit(page,server.url,'/hr/applications?q='+encodeURIComponent('Гостьева'));
     await page.getByRole('link',{name:'Учебная Гостьева'}).click();
+    await page.getByText('Действия с откликом',{exact:true}).click();
     await page.getByRole('button',{name:'Начать рассмотрение'}).click();
     dialog=page.locator('dialog[open]');
     await dialog.getByRole('button',{name:'Начать рассмотрение'}).click();
-    await page.getByRole('button',{name:'Пригласить на интервью'}).waitFor();
+    await page.getByText('Рассмотрение',{exact:true}).waitFor();
     await guest.reload();
     await guest.getByText('На рассмотрении',{exact:true}).waitFor();
 
@@ -301,44 +271,13 @@ async function run(){
         await measure(page,'long-name-and-vacancy',width);
       }
     }
-    await page.clock.install();
-    await visit(page,server.url,'/hr/feedback');
-    const bell=page.locator('[data-news-bell]');
-    await bell.locator('[data-news-count]').waitFor();
-    assert.equal(await bell.locator('[data-news-count]').textContent(),'4');
-    const popup=page.locator('[data-news-widget][popover]');
-    await bell.click();
-    await popup.getByRole('link',{name:newsTitle,exact:true}).waitFor();
-    await page.keyboard.press('Escape');
-    await popup.waitFor({state:'hidden'});
-    assert.equal(await bell.evaluate(node=>node===document.activeElement),true);
-    await bell.click();
-    await popup.getByRole('link',{name:'Вся лента',exact:true}).click();
-    await page.getByRole('heading',{name:'HR-новости',exact:true}).waitFor();
-    await page.getByLabel('Тема',{exact:true}).selectOption('skills');
-    assert.equal(await page.locator('[data-news-content] tbody tr').count(),2);
-    await page.getByLabel('Только непрочитанные').check();
-    await page.getByRole('button',{name:'Отметить прочитанным: '+newsTitle}).click();
-    await page.getByRole('link',{name:newsTitle,exact:true}).waitFor({state:'hidden'});
-    assert.equal(await bell.locator('[data-news-count]').textContent(),'3');
-    await page.getByText('Каталог источников',{exact:true}).click();
-    await page.getByRole('link',{name:'hh.ru — статистика рынка труда',exact:true}).waitFor();
-    await measure(page,'news-catalog-open',1024);
-    await page.getByRole('button',{name:'Отметить все прочитанными'}).click();
-    await bell.locator('[data-news-count]').waitFor({state:'hidden'});
-    await Promise.all([
-      page.waitForResponse(response=>response.url().endsWith('/api/v1/hr/news')),
-      visit(page,server.url,'/hr/feedback')
-    ]);
-    newPublication=true;
-    await server.env.DB.prepare("UPDATE records SET sort='' WHERE kind='system' AND id='news-refresh'").bind().first();
-    await page.clock.fastForward(121000);
-    await page.getByText('В HR-новостях появились новые публикации.',{exact:true}).waitFor();
-    assert.equal(await bell.locator('[data-news-count]').textContent(),'1');
-    await bell.click();
-    await popup.getByRole('link',{name:'Новые данные о рынке труда',exact:true}).waitFor();
-    await popup.getByRole('link',{name:'Вся лента',exact:true}).click();
-    await page.getByRole('link',{name:'Новые данные о рынке труда',exact:true}).waitFor();
+    await visit(page,server.url,'/hr/analytics');
+    await page.getByRole('link',{name:'Аналитика увольнений',exact:true}).click();
+    await page.getByRole('heading',{name:'Динамика увольнений'}).waitFor();
+    await page.getByLabel('Тип увольнения').selectOption('employer_initiated');
+    await page.getByRole('button',{name:'Применить'}).click();
+    await page.waitForURL('**/hr/analytics/departures?**category=employer_initiated');
+    await page.getByRole('heading',{name:'Причины увольнения по департаментам'}).waitFor();
     console.log(JSON.stringify({scenarios,fail,notices,errors:[...errors],workflows:9,images},null,2));
     if(errors.size||fail.length)process.exitCode=1;
   } finally {

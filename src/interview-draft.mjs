@@ -1,5 +1,6 @@
 const yandexCompletionUrl = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion";
 const interviewSourceTypes = new Set(["resume", "test", "clarification", "interview"]);
+const personalInterviewTopic = /семейн|беремен|декрет|религи|вероисповед|национальност|инвалидност|здоровь|дет(?:и|ей|ям|ьми)|реб[её]н|сколько вам лет/iu;
 const maxInterviewQuestions = 6;
 const maxComparedVacancies = 40;
 const refinementCache = new Map();
@@ -55,8 +56,7 @@ async function generateInterviewQuestions(env, facts, tokenLimit = 700) {
     for (const row of questions.slice(0, 8)) {
       if (!known.has(row?.criterionKey) || typeof row.question !== "string" || drafts.has(row.criterionKey)) continue;
       const question = row.question.trim();
-      const personalTopic = /семейн|беремен|декрет|религи|вероисповед|национальност|инвалидност|здоровь|детей|сколько вам лет/iu;
-      if (question && question.length <= 300 && question.endsWith("?") && !/[\r\n]/u.test(question) && !personalTopic.test(question)) drafts.set(row.criterionKey, question);
+      if (question && question.length <= 300 && question.endsWith("?") && !/[\r\n]/u.test(question) && !personalInterviewTopic.test(question)) drafts.set(row.criterionKey, question);
     }
     return drafts;
   } catch {
@@ -171,6 +171,32 @@ async function suggestedInterviewVacancies(ctx, app) {
     alternatives:options.slice(0,3).map(({matched,coverage,...option}) => option),
     comparedVacancies:Math.min(versions.length,maxComparedVacancies), moreVacancies:versions.length>maxComparedVacancies
   };
+}
+
+async function recommendedInterviewQuestions(ctx, app) {
+  const [version, assessment, resume] = await Promise.all([
+    get(ctx, "version", app.versionId), assessView(ctx, app), get(ctx, "source", app.sourceId, false)
+  ]);
+  const items = assessment.items.map(item => ({ ...item, evidence: item.evidence.filter(e => e.type === "resume") }));
+  const entries = rankedInterviewEntries(interviewEntries(version, items));
+  const local = planQuestions(entries).map(({ question }) => question);
+  if (!ctx.env.GIGACHAT_AUTH_KEY?.trim() || !hasResumeText(resume?.text || "")) return result({ questions: local });
+  const facts = {
+    vacancy: { title: version.title, description: version.description.slice(0, 4000), requirements: version.criteria.map(c => c.label) },
+    resume: redactResume(resume.text, app).slice(0, 6000)
+  };
+  const text = await cachedGigaCompletion(ctx.env, facts, "interviewRecommendations");
+  let questions;
+  try {
+    questions = JSON.parse(text)?.questions;
+  } catch {
+    return result({ questions: local });
+  }
+  const clean = Array.isArray(questions) ? [...new Set(questions
+    .filter(q => typeof q === "string")
+    .map(q => redactResume(q.trim(), app))
+    .filter(q => q.length <= 300 && q.endsWith("?") && !/[\r\n]/u.test(q) && !personalInterviewTopic.test(q)))].slice(0, 6) : [];
+  return result({ questions: clean.length ? clean : local });
 }
 
 async function interviewPlan(ctx, app) {

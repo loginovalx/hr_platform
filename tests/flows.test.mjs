@@ -434,6 +434,66 @@ test("voluntary departure collects a separate reason and keeps the hire counted"
   assert.equal((await hr("/hr/applications/app_demo_8")).outcome,"hired");
 });
 
+test("departure analytics applies filters, protects small groups and reports exit survey topics", async t => {
+  const {hr,client}=await fixture(t);
+  const vacancy=await publish(hr);
+  const answers=[
+    {questionId:"reason",value:"workload"},{questionId:"topics",value:["conditions","onboarding"]},
+    {questionId:"manager",value:4},{questionId:"administration",value:3}
+  ];
+  const link="/hr/analytics/departures?department="+encodeURIComponent(draft.department)+"&category=voluntary";
+  for (let n=1; n<=3; n++) {
+    const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Тестовый Сотрудник "+n,
+      contact:"candidate@example.test",resumeText:"Работал с отчётами."},201));
+    const path="/hr/applications/"+app.applicationId;
+    await settledAssessment(hr,path);
+    const steps=["start_review","invite_interview","complete_interview","move_to_decision","hire"];
+    let hired;
+    for (const [index, action] of steps.entries()) {
+      hired=await stage(hr,app.applicationId,action,(await hr(path)).stage.version);
+      assert.equal(Boolean(hired.employmentId), index === steps.length-1);
+    }
+    const exit=await hr("/hr/employments/"+hired.employmentId+"/terminations",post({effectiveAt:today(),reasonCategory:"voluntary"},201));
+    const invitation=await hr("/hr/survey-invitations/"+exit.surveyInvitationId);
+    const guest=client();
+    const publicPath=new URL(invitation.link).pathname.replace("/surveys/","/public/surveys/");
+    await guest(publicPath+"/responses",post({answers},201));
+    const data=await hr(link);
+    assert.equal(data.total,n);
+    assert.equal(data.early,n);
+    assert.equal(data.groups[0].answered,n);
+    assert.equal(Boolean(data.signal),n===3);
+    assert.equal(data.groups[0].topics?.conditions,n===3?3:undefined);
+    assert.equal(data.survey.ratings.manager.value,n===3?4:null);
+  }
+  assert.equal((await hr(link.replace("voluntary","employer_initiated"))).total,0);
+  await hr("/hr/analytics/departures/decision",post({department:draft.department,text:"Проверить программу адаптации."},201));
+  assert.equal((await hr(link)).signal.decision.text,"Проверить программу адаптации.");
+  const regular=client();
+  await regular("/auth/login",post({user:"hr",password:"test-hr-password"}));
+  await regular(link,{expected:403});
+});
+
+test("reserve profiles can be edited and removed without deleting their applications", async t => {
+  const {hr}=await fixture(t);
+  const vacancy=await publish(hr);
+  const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Соискатель Резерва",resumeText:"Работал с отчётами."},201));
+  const appPath="/hr/applications/"+app.applicationId;
+  await settledAssessment(hr,appPath);
+  const contact={fullName:"Соискатель Резерва",contact:"candidate@example.test"};
+  const person=await hr("/hr/candidates",post(contact,201));
+  const path="/hr/candidates/"+person.candidateId;
+  await hr(appPath+"/candidate",{method:"PUT",body:{candidateId:person.candidateId}});
+  await hr(path,{method:"PATCH",body:{...contact,education:"Высшее экономическое",experience:"Два года аналитики"}});
+  assert.equal((await hr(path)).experience,"Два года аналитики");
+  assert.deepEqual((await hr(path)).applicationIds,[app.applicationId]);
+  await hr(path,{method:"DELETE",body:{}});
+  await hr(path,{expected:404});
+  assert.equal((await hr(appPath)).candidateId,person.candidateId);
+  assert.ok(!(await hr("/hr/candidates?profilesOnly=1")).items.some(item=>item.candidateId===person.candidateId));
+  assert.ok((await hr("/hr/candidates")).items.some(item=>item.applicationId===app.applicationId));
+});
+
 test("intake triage explains each queue, applies filters before pagination and never rejects", async t => {
   const {hr}=await fixture(t,"0",{gigachat:model});
   const vacancy=await publish(hr,{...draft,testQuestions:[],criteria:[
@@ -489,6 +549,14 @@ test("GigaChat analyzes a PDF against the published vacancy and grounds matches 
       assert.equal(init.body.get("scope"),"GIGACHAT_API_PERS");
       return gigaAuth();
     }
+    const interviewRequest=JSON.parse(init.body);
+    if (interviewRequest.messages[0].content.includes("Составь от 3 до 6")) {
+      const facts=JSON.parse(interviewRequest.messages[1].content);
+      assert.doesNotMatch(facts.resume,/Private Applicant|secret@example.test/);
+      assert.match(facts.resume,/multi-table joins/);
+      assert.equal(facts.vacancy.title,draft.title);
+      return gigaReply({questions:["Как вы проверяли результат объединения таблиц?", "Есть ли у вас дети?"]});
+    }
     completions++;
     try {
       assert.equal(url,"https://api.giga.chat/v1/chat/completions");
@@ -510,7 +578,7 @@ test("GigaChat analyzes a PDF against the published vacancy and grounds matches 
         criteria:[{key:"c1",status:"matched",quote:{source:"s1",text:"Built datasets with multi-table joins and grouped aggregates."}}]
       })}}]});
     }
-    return gigaReply({summary:"Кандидат строил наборы данных из нескольких таблиц. Опыт работы с Python не подтверждён.", education:["Example University,  Bachelor of Economics.", "Invented University, Master of Science"], criteria:[
+    return gigaReply({summary:"Кандидат строил наборы данных из нескольких таблиц. Опыт работы с Python не подтверждён.", education:["Example University,  Bachelor of Economics.", "Invented University, Master of Science"], experience:["Built datasets with multi-table joins and grouped aggregates.", "Invented role"], criteria:[
       {key:"c1",status:"matched",comment:"Описана работа с объединениями и агрегациями.",quote:{source:"s1",text:"Built datasets with multi-table joins and grouped aggregates."}},
       {key:"c2",status:"matched",comment:"Придуманное основание.",quote:{source:"s1",text:"Разрабатывал на Python"}}
     ]});
@@ -530,9 +598,14 @@ test("GigaChat analyzes a PDF against the published vacancy and grounds matches 
   assert.deepEqual(initial.items.map(item=>item.status),["matched","needs_clarification"]);
   assert.equal(initial.items[0].evidence[0].quote,"Built datasets with multi-table joins and grouped aggregates.");
   assert.deepEqual(initial.education,["Example University, Bachelor of Economics."]);
+  assert.deepEqual(initial.experience,["Built datasets with multi-table joins and grouped aggregates."]);
+  const profile=(await hr(path)).candidateId;
+  assert.equal((await hr("/hr/candidates/"+profile)).experience,initial.experience[0]);
   assert.equal(initial.items[1].comment,null);
   assert.equal((await hr(path)).resumeSource.extractStatus,"extracted");
   assert.equal(completions,1);
+  assert.deepEqual(await hr(path+"/interview-questions"),{questions:["Как вы проверяли результат объединения таблиц?"]});
+  await client()(path+"/interview-questions",{expected:401});
   await client()(path+"/assessment",post({},401));
   available=false;
   await hr(path+"/assessment",post({},202));

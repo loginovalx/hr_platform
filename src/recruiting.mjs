@@ -459,6 +459,7 @@ async function assessView(ctx, app) {
     assessmentStatus: app.assessmentStatus === "ready" && !current ? "not_analyzed" : app.assessmentStatus,
     issue: app.analysisIssue || null, provider: current ? value.provider || "local" : null,
     summary: current ? value.summary ?? null : null, education: current ? value.education ?? null : null,
+    experience: current ? value.experience ?? null : null,
     assessedAt: current ? value.assessedAt : null, items
   };
 }
@@ -482,32 +483,52 @@ async function overrideAssessment(ctx, app, criterionId) {
   stmts.push(put(ctx, "override", make({ applicationId: app.id, criterionId, ...hrOverride }, app.id)));
   return commit(ctx, stmts, result({ assessmentId: a.id, criteriaVersionId: app.criteriaVersionId, assessmentStatus: app.assessmentStatus, items: revised }));
 }
-function candidateFromApplication(app) {
+function candidateFromApplication(app, assessment) {
+  const education = resumeProfileField(assessment?.education, 500);
+  const experience = resumeProfileField(assessment?.experience, 1000);
   return make({
     fullName: app.fullName, searchName: lowered(app.fullName), contact: app.contact,
-    education: "", additionalEducation: "", additionalEducationSearch: "", experience: "",
+    education, educationSearch: lowered(education), additionalEducation: "", additionalEducationSearch: "", experience, experienceSearch: lowered(experience),
     factsSource: { type: "resume", applicationId: app.id, at: app.acceptedAt }
   });
 }
-function candidateSummary(person) {
-  return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, additionalEducation: person.additionalEducation || "", experience: person.experience, updatedAt: person.sort };
+function resumeProfileField(lines, max) {
+  return Array.isArray(lines) ? lines.join("\n").slice(0, max) : "";
 }
-async function createCandidate(ctx) {
+function candidateSummary(person) {
+  return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, additionalEducation: person.additionalEducation || "", experience: person.experience, updatedAt: person.sort, removedFromReserve: Boolean(person.removedFromReserveAt) };
+}
+async function saveCandidate(ctx, existing = null) {
+  if (existing && !canManageCandidate(ctx, existing)) denied();
   const b = ctx.body;
   const fullName = field(b.fullName, "fullName", limits.name, true);
   const email = contact(b.contact, false);
   const education = field(b.education, "education", 500);
   const additionalEducation = field(b.additionalEducation, "additionalEducation", 500);
   const experience = field(b.experience, "experience", 1000);
-  const person = make({ ownerId:ctx.actor.id, fullName, searchName: lowered(fullName), contact: email, education, educationSearch: lowered(education), additionalEducation, additionalEducationSearch: lowered(additionalEducation), experience, experienceSearch: lowered(experience), factsSource: { type: "hr", actorName: ctx.actor.name, at: isoNow() } });
-  return commit(ctx, [put(ctx, "candidate", person)], result(candidateSummary(person), 201));
+  const fields = { fullName, searchName: lowered(fullName), contact: email, education, educationSearch: lowered(education),
+    additionalEducation, additionalEducationSearch: lowered(additionalEducation), experience, experienceSearch: lowered(experience),
+    factsSource: { type: "hr", actorName: ctx.actor.name, at: isoNow() } };
+  const person = existing ? { ...existing, ...fields, sort: isoNow() } : make({ ownerId:ctx.actor.id, ...fields });
+  const statements = existing ? [...expect(ctx, "candidate", existing), update(ctx, "candidate", person)] : [put(ctx, "candidate", person)];
+  return commit(ctx, statements, result(candidateSummary(person), existing ? 200 : 201));
 }
+function canManageCandidate(ctx, person) {
+  return !ctx.actor.vacancyIds || person.ownerId === ctx.actor.id;
+}
+async function removeReserveProfile(ctx, person) {
+  if (!canManageCandidate(ctx, person)) denied();
+  return commit(ctx, [...expect(ctx, "candidate", person),
+    update(ctx, "candidate", { ...person, removedFromReserveAt: isoNow() })], result({ removed: true }));
+}
+
 async function linkCandidate(ctx, a) {
   if (!safePath(ctx.body.candidateId)) invalid("candidateId", "invalid_id", "Выберите профиль кандидата.");
   if (a.stage.outcome === "hired" && a.candidateId !== ctx.body.candidateId) fail(409, "candidate_locked", "Связь закреплена при найме.");
   const person = await get(ctx, "candidate", ctx.body.candidateId);
+  if (person.removedFromReserveAt) missing();
   if (a.candidateId === person.id) return commit(ctx, [], result({ applicationId: a.id, candidateId: person.id }));
   const applied = { ...a, candidateId: person.id };
   const history = make({ applicationId: a.id, candidateId: person.id, previousCandidateId: a.candidateId, at: isoNow(), actorId: ctx.actor.id }, a.id);
-  return commit(ctx, [...expect(ctx, "application", a), update(ctx, "application", applied), put(ctx, "candidate_link", history)], result({ applicationId: a.id, candidateId: person.id }));
+  return commit(ctx, [...expect(ctx, "application", a), ...expect(ctx, "candidate", person), update(ctx, "application", applied), put(ctx, "candidate_link", history)], result({ applicationId: a.id, candidateId: person.id }));
 }

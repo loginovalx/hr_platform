@@ -112,6 +112,7 @@ async function hrApplications(ctx, method, p) {
     if (method === "PATCH" && p.length === 4) return overrideAssessment(ctx, app, p[3]);
   }
   if (p[2] === "interview-draft" && p.length === 3 && method === "POST") return interviewDraft(ctx, app);
+  if (p[2] === "interview-questions" && p.length === 3 && method === "GET") return recommendedInterviewQuestions(ctx, app);
   if (p[2] === "interview-plan" && p.length === 3 && method === "GET") return interviewPlan(ctx, app);
   if (p.length === 3 && p[2] === "interviews" && method === "GET") return result(await page(ctx,"interview",["scope=?"],[app.id]));
   if (p[2] === "stage" && p.length === 3 && method === "GET") return result(viewStage(app));
@@ -260,6 +261,20 @@ async function downloadAttachment(ctx, id, attachment) {
   return new Response(file.body,{headers:{...securityHeaders,"cache-control":"private,no-store",
     "content-type":attachment.type,"content-disposition":`attachment; filename*=UTF-8''${encodeURIComponent(attachment.name).replaceAll("'","%27")}`}});
 }
+async function candidateWithResumeFacts(ctx, person) {
+  const summary = candidateSummary(person);
+  if (summary.removedFromReserve || (summary.education && summary.experience)) return summary;
+  const filters = ["a.kind='application'", "json_extract(a.data,'$.candidateId')=?"];
+  const args = [person.id];
+  vacancyScope(ctx, "a.scope", filters, args);
+  const entries = await rows(ctx, `SELECT evaluation.* FROM records a JOIN records evaluation
+    ON evaluation.kind='assessment' AND evaluation.id=a.id
+    WHERE ${filters.join(" AND ")} AND json_extract(evaluation.data,'$.provider')='gigachat'
+    ORDER BY json_extract(evaluation.data,'$.assessedAt') DESC, a.sort DESC,a.id LIMIT 1`, ...args);
+  return { ...summary,
+    education: summary.education || resumeProfileField(entries[0]?.education, 500),
+    experience: summary.experience || resumeProfileField(entries[0]?.experience, 1000) };
+}
 async function searchCandidates(ctx) {
   await backfillSearch(ctx);
   const query = field(ctx.url.searchParams.get("q"), "q", limits.name);
@@ -267,7 +282,10 @@ async function searchCandidates(ctx) {
   const additional = field(ctx.url.searchParams.get("additionalEducation"), "additionalEducation", 160);
   const skills = field(ctx.url.searchParams.get("skills"), "skills", 120);
   const profilesOnly = ctx.url.searchParams.get("profilesOnly") === "1";
-  const conditions = ["(kind='candidate' OR json_extract(data,'$.candidateId') IS NULL)"];
+  const conditions = [`(kind='candidate' AND json_extract(data,'$.removedFromReserveAt') IS NULL OR
+    kind='application' AND (json_extract(data,'$.candidateId') IS NULL OR EXISTS (
+      SELECT 1 FROM records c WHERE c.kind='candidate' AND c.id=json_extract(records.data,'$.candidateId')
+      AND json_extract(c.data,'$.removedFromReserveAt') IS NOT NULL AND coalesce(json_extract(records.data,'$.stage.outcome'),'')<>'hired')))`];
   const params = [];
   const canSearchArchives = !ctx.actor.vacancyIds;
   const archiveSearch = key => `EXISTS (SELECT 1 FROM records d
@@ -302,9 +320,13 @@ async function searchCandidates(ctx) {
     if(canSearchArchives) params.push(word);
   }
   const found = await page(ctx, profilesOnly ? "candidate" : ["candidate","application"], conditions, params);
-  return result({ ...found, items: found.items.map(item => item.stage
-    ? { kind: "application", ...applicationSummary(item) }
-    : { kind: "candidate", ...candidateSummary(item) }) });
+  const items = await Promise.all(found.items.map(async item => {
+    if (!item.stage) return { kind: "candidate", ...await candidateWithResumeFacts(ctx,item) };
+    const a = await get(ctx, "assessment", item.id, false);
+    return { kind: "application", ...applicationSummary(item),
+      education: resumeProfileField(a?.education, 500), experience: resumeProfileField(a?.experience, 1000) };
+  }));
+  return result({ ...found, items });
 }
 async function importBatch(ctx) {
   const batch = collection(ctx.body.items, "items", 20);
@@ -382,11 +404,14 @@ async function hrRoutes(ctx, method, p) {
   }
   if (action === "archive-example" && method === "GET") return result({items: [{fullName:"Пример Кандидата",contact:"candidate@example.com",resumeText:"Готовил отчёты и анализировал данные.",sourceReceivedAt:"2026-11-14"}]});
   if (p[0] === "candidates") {
-    if (p.length === 1 && method === "POST") return createCandidate(ctx);
+    if (p.length === 1 && method === "POST") return saveCandidate(ctx);
     if (p.length === 1 && method === "GET") return searchCandidates(ctx);
-    if (p.length === 2 && method === "GET") {
+    if (p.length === 2 && ["GET","PATCH","DELETE"].includes(method)) {
       const person = await get(ctx, "candidate", p[1]);
-      if(ctx.url.searchParams.get("summary")==="1")return result(candidateSummary(person));
+      if (method === "GET" && ctx.url.searchParams.get("summary") === "1") return result(await candidateWithResumeFacts(ctx,person));
+      if (person.removedFromReserveAt) missing();
+      if (method === "PATCH") return saveCandidate(ctx, person);
+      if (method === "DELETE") return removeReserveProfile(ctx, person);
       const conditions = ["json_extract(data,'$.candidateId')=?"], params = [person.id];
       vacancyScope(ctx, "scope", conditions, params);
       const apps = await page(ctx, "application", conditions, params);
@@ -396,7 +421,7 @@ async function hrRoutes(ctx, method, p) {
       const archive = ctx.actor.vacancyIds ? {items:[],nextCursor:null} : await page(ctx, "archive_document", ["scope=?"], [person.id], pageOptions(archiveUrl));
       const archiveDocuments = archive.items.map(({ id, title, text, sourceAccount, deliveryId, events, addedBy, addedAt, attachment,education,additionalEducation }) =>
         ({ documentId:id,title,text,sourceAccount,deliveryId,events,addedBy,addedAt,attachment,education,additionalEducation }));
-      return result({ ...candidateSummary(person), factsSource: person.factsSource, archiveDocuments, archiveNextCursor: archive.nextCursor, applicationIds: apps.items.map(a => a.id), applications: apps.items.map(applicationSummary), nextCursor: apps.nextCursor });
+      return result({ ...await candidateWithResumeFacts(ctx,person), factsSource: person.factsSource, canManage: canManageCandidate(ctx, person), archiveDocuments, archiveNextCursor: archive.nextCursor, applicationIds: apps.items.map(a => a.id), applications: apps.items.map(applicationSummary), nextCursor: apps.nextCursor });
     }
   }
   if (p[0] === "resume-sources" && p.length === 2 && method === "GET") {
@@ -448,6 +473,8 @@ async function hrRoutes(ctx, method, p) {
     if (p.length === 2 && method === "GET") return result(await inviteView(ctx, await get(ctx, "invitation", p[1])));
     if (p.length === 3 && p[2] === "mark-sent" && method === "POST") return markSent(ctx, p[1]);
   }
+  if (action === "analytics/departures" && method === "GET") return departureAnalytics(ctx);
+  if (action === "analytics/departures/decision" && method === "POST") return saveDepartureDecision(ctx);
   if (action === "analytics" && method === "GET") return analytics(ctx);
   if (action === "analytics/brief" && method === "POST") return analyticsBrief(ctx);
   missing();

@@ -6,10 +6,11 @@ function resumeResponseFormat(criterionKeys) {
   return {
     type: "json_schema", strict: true,
     schema: {
-      type: "object", additionalProperties: false, required: ["summary", "criteria", "education"],
+      type: "object", additionalProperties: false, required: ["summary", "criteria", "education", "experience"],
       properties: {
         summary: { type: "string" },
         education: { type: "array", items: { type: "string" } },
+        experience: { type: "array", items: { type: "string" } },
         criteria: {
           type: "array",
           items: {
@@ -120,7 +121,7 @@ async function analyzeResume(env, app, version, sources, previous) {
   };
   const instruction = criteria.length ? resumeAnalysisInstruction : resumeAnalysisInstruction +
     "\nЕсли criteria у вакансии пуст, выдели до 8 явно указанных требований к образованию, опыту, навыкам или инструментам. Для каждого требования верни в key дословную короткую фразу из описания вакансии до 160 символов и оцени ее по резюме. Не добавляй требований от себя. Если явных требований нет, верни пустой массив.";
-  const options = { instruction: instruction + "\nПередай в education до четырёх дословных выдержек только из резюме: вуз или колледж, уровень, специальность, статус или годы обучения, дополнительное образование и переподготовка, если они указаны. Одна запись — одна выдержка. Для многострочной записи цитируй смежные строки. При отсутствии сведений верни [].", maxTokens: 3000, timeout: 35000 };
+  const options = { instruction: instruction + "\nПередай в education до четырёх дословных выдержек только из резюме: вуз или колледж, уровень, специальность, статус или годы обучения, дополнительное образование и переподготовка, если они указаны. Одна запись — одна выдержка. Для многострочной записи цитируй смежные строки. При отсутствии сведений верни []. В experience дай до четырёх дословных выдержек о должностях, периодах работы, проектах, задачах или результатах. Если опыт не указан, верни [].", maxTokens: 3000, timeout: 35000 };
   const responseFormat = resumeResponseFormat(criteria.map(criterion => criterion.key));
   let answer;
   try {
@@ -158,12 +159,15 @@ async function analyzeResume(env, app, version, sources, previous) {
   });
   const normalize = text => text.replace(/\s+/gu, " ").trim();
   const resumeText = normalize(inputs.find(source => source.type === "resume")?.modelText || "");
-  const lines = Array.isArray(answer.education) ? answer.education : [];
-  const education = [...new Set(lines.filter(line => typeof line === "string").map(normalize)
+  const verifiedQuotes = lines => [...new Set((Array.isArray(lines) ? lines : [])
+    .filter(line => typeof line === "string").map(normalize)
     .filter(line => line.length >= 3 && line.length <= 300 && resumeText.includes(line)))].slice(0, 4);
+  const education = verifiedQuotes(answer.education);
+  const experience = verifiedQuotes(answer.experience);
   const saved = previous?.provider === "gigachat" ? previous : null;
   const educationSection = educationFromSection(inputs.find(source => source.type === "resume")?.modelText || "");
   return { provider: "gigachat", summary: redactResume(answer.summary.trim(), app).slice(0, 900),
     education: education.length ? education : saved?.education?.length ? saved.education : educationSection,
+    experience: Array.isArray(answer.experience) ? experience : saved?.experience ?? null,
     items: summaryOnly && saved?.items?.length ? saved.items : items };
 }

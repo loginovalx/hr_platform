@@ -68,6 +68,12 @@ async function transition(ctx, app) {
 }
 const voluntaryReasons = { new_job:"Другая работа", workload:"Нагрузка или условия работы", growth:"Профессиональное развитие", personal:"Личные обстоятельства", other:"Другая причина", undisclosed:"Предпочитаю не отвечать" };
 const isExitSurvey = type => type === "exit_feedback" || type === "voluntary_exit";
+const exitTopics = { conditions:"Условия работы", onboarding:"Адаптация", manager:"Руководитель", pay:"Зарплата" };
+const exitQuestions = [
+  { id:"topics", text:"Какие темы повлияли на увольнение?", type:"multiple", options:exitTopics, required:false },
+  { id:"manager", text:"Как вы оцениваете работу непосредственного руководителя?", type:"rating", required:false },
+  { id:"administration", text:"Как вы оцениваете работу администрации?", type:"rating", required:false }
+];
 const questionnaires = {
   interview_feedback: [
     { id: "clarity", text: "Насколько понятным был процесс интервью?", type: "rating", required: true },
@@ -76,11 +82,13 @@ const questionnaires = {
   exit_feedback: [
     { id: "clarity", text: "Насколько понятно вам объяснили решение?", type: "rating", required: true },
     { id: "communication", text: "Как вы оцениваете коммуникацию в процессе увольнения?", type: "rating", required: true },
-    { id: "comment", text: "Что можно улучшить?", type: "text", required: false }
+    { id: "comment", text: "Что можно улучшить?", type: "text", required: false },
+    ...exitQuestions
   ],
   voluntary_exit: [
     { id:"reason", text:"Какова основная причина вашего ухода?", type:"choice", options:voluntaryReasons, required:true },
-    { id:"comment", text:"Что могло бы улучшить условия работы?", type:"text", required:false }
+    { id:"comment", text:"Что могло бы улучшить условия работы?", type:"text", required:false },
+    ...exitQuestions
   ]
 };
 const surveyTitles = { voluntary_exit:"Причины добровольного ухода", interview_feedback: "Обратная связь после интервью", exit_feedback: "Обратная связь после увольнения" };
@@ -160,11 +168,16 @@ async function publicSurvey(ctx, supplied) {
     audience: isExitSurvey(inv.type) ? "Ответы увидят сотрудники HR с доступом к анкетам после увольнения." : "Ответы увидит кадровая команда, которая проводит подбор."
   });
   const submitted = new Map();
-  for (const a of collection(ctx.body.answers, "answers", 3)) {
+  for (const a of collection(ctx.body.answers, "answers", questionnaires[inv.type].length)) {
     const question = questionnaires[inv.type].find(q => q.id === a?.questionId);
     if (!question || submitted.has(question.id)) invalid("answers", "invalid_question", "В форме есть неизвестный или повторяющийся вопрос.");
     if (question.type === "rating") {
       if (!Number.isInteger(a.value) || a.value < 1 || a.value > 5) invalid(question.id, "invalid_rating", "Выберите оценку от 1 до 5.");
+      submitted.set(question.id, a.value);
+    } else if (question.type === "multiple") {
+      if (!Array.isArray(a.value) || a.value.length > Object.keys(question.options).length ||
+          new Set(a.value).size !== a.value.length || a.value.some(value => typeof value !== "string" || !Object.hasOwn(question.options,value)))
+        invalid(question.id, "invalid_choice", "Выберите темы из списка.");
       submitted.set(question.id, a.value);
     } else if (question.type === "choice") {
       if (typeof a.value !== "string" || !Object.hasOwn(question.options,a.value)) invalid(question.id,"invalid_choice","Выберите причину из списка.");
@@ -173,7 +186,7 @@ async function publicSurvey(ctx, supplied) {
       submitted.set(question.id, field(a.value, question.id, limits.notes));
     }
   }
-  const answers = questionnaires[inv.type].map(q => {
+  const answers = questionnaires[inv.type].filter(q => q.required || submitted.has(q.id)).map(q => {
     if (!submitted.has(q.id) && q.required) invalid(q.id, "required", "Выберите оценку.");
     return { questionId: q.id, value: submitted.get(q.id) ?? "" };
   });
