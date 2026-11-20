@@ -230,7 +230,9 @@ function applicationTable(items, compact = false) {
   const rows = items.map((x,i) => {
     const url = `/hr/applications/${enc(x.applicationId)}`;
     const person = `<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link class="table-name" href="${url}">${esc(x.fullName)}</a>${!compact && x.contact ? `<span class="table-meta">${esc(x.contact)}</span>` : ""}</div></div>`;
-    return { href:url,cells:[person,esc(x.vacancyTitle),stagePill(x),...(!compact ? [`<span class="muted">${esc(sourceNames[x.sourceChannel])}</span>`] : []),`<span class="muted">${esc(date(x.receivedAt))}</span>`] };
+    const progress = !compact && x.reviewProgress;
+    const stage = stagePill(x) + (progress ? `<small class="table-meta">Цитаты ${progress.withEvidence}/${progress.required} · Подтверждено HR ${progress.confirmed}/${progress.required}</small>` : "");
+    return { href:url,cells:[person,esc(x.vacancyTitle),stage,...(!compact ? [`<span class="muted">${esc(sourceNames[x.sourceChannel])}</span>`] : []),`<span class="muted">${esc(date(x.receivedAt))}</span>`] };
   });
   return items.length ? table(headers,rows) : empty("Откликов пока нет","Когда соискатель заполнит форму, отклик появится здесь.");
 }
@@ -278,6 +280,7 @@ function vacancyEditorPart(kind,v,i) {
     ${pair(input("criteria_"+suffix+"_label","Требование",{required:true,max:160,value:v.label,placeholder:"Например, опыт работы с SQL"}),selectField("criteria_"+suffix+"_code","Тип критерия",Object.entries(codeLabels),v.code||"custom"))}
     ${input("criteria_"+suffix+"_keywords","Ключевые слова",{max:850,value:(v.keywords||[]).join(", "),optional:true,hint:"Перечислите через запятую. Слова используются для локальной проверки."})}
     ${input("criteria_"+suffix+"_question","Вопрос для уточнения",{max:300,value:v.question,optional:true})}
+    ${input("criteria_"+suffix+"_reference","Основание или пункт инструкции",{max:250,value:v.reference,optional:true})}
     ${check("criteria_"+suffix+"_required","Обязательный критерий",v.required!==false)}</div>`;
   return `<div class="form-block stack-sm"><div class="row between"><h3>Вопрос ${i+1}</h3>${drop}</div>
     ${input("test_"+suffix+"_text","Формулировка",{type:"textarea",rows:2,required:true,max:400,value:v.text})}
@@ -295,7 +298,7 @@ function captureVacancyParts(form) {
   const f=new FormData(form);
   for (const v of vacancyParts.criteria) {
     const key="criteria_"+v.id+"_";
-    Object.assign(v,{label:f.get(key+"label")||"",code:f.get(key+"code")||"custom",keywords:String(f.get(key+"keywords")||"").split(",").map(x=>x.trim()).filter(Boolean),question:f.get(key+"question")||"",required:f.has(key+"required")});
+    Object.assign(v,{label:f.get(key+"label")||"",code:f.get(key+"code")||"custom",keywords:String(f.get(key+"keywords")||"").split(",").map(x=>x.trim()).filter(Boolean),question:f.get(key+"question")||"",reference:f.get(key+"reference")||"",required:f.has(key+"required")});
   }
   for (const v of vacancyParts.testQuestions) {
     const key="test_"+v.id+"_";
@@ -341,6 +344,7 @@ async function applicationList() {
     ${vacancySelect(menu,q.get("vacancyId"))}
     ${selectField("stage","Этап", [["","Все этапы"],...Object.entries(stages).map(([id,[text]])=>[id,text])],q.get("stage"))}
     ${selectField("channel","Источник",[["","Все источники"],...Object.entries(sourceNames)],q.get("channel"))}
+    ${check("priority","По приоритету проверки выбранной вакансии",q.get("priority")==="on")}
     <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}</div>
   </form>
   <section class="card">${applicationTable(r.items)}${pagination(r.nextCursor)}</section>`;
@@ -384,6 +388,7 @@ function assessmentCards(assessment) {
     const proof=x.evidence.map(e=>`<div class="stack-sm"><blockquote class="quote">${esc(e.quote)}</blockquote>
       <div>${btn(e.type==="resume"?"Открыть резюме":e.type==="test"?"Открыть ответ теста":"Открыть ответ кандидата",`data-action="evidence" data-type="${esc(e.type)}" data-id="${esc(e.sourceId)}"`,"quiet btn-sm","file")}</div></div>`).join("");
     return `<article class="criterion"><div class="row between wrap"><h3 class="grow">${esc(x.label)}</h3>${chip(status,color,true)}</div>
+      ${x.reference ? `<p class="small muted">${esc(x.reference)}</p>` : ""}
       ${proof || '<p class="small muted">Сведения в источниках не указаны.</p>'}
       ${x.question && !x.hrOverride ? `<p class="small"><strong>Уточнение.</strong> ${esc(x.question)}</p>` : ""}
       ${x.hrOverride ? `<div class="note"><strong>Правка HR.</strong> ${esc(x.hrOverride.reason)}<p class="tiny muted">${esc(x.hrOverride.actorName)} · ${esc(date(x.hrOverride.at,true))}</p></div>` : ""}
@@ -462,7 +467,7 @@ async function candidatesView() {
     return {href:url,cells:[`<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link href="${url}" class="table-name">${esc(x.fullName)}</a></div></div>`,known(x.contact),known(x.education),known(x.additionalEducation),known(x.experience)]};
   });
   return `${heading("Кандидаты","Найдите профиль по фамилии или имени и откройте историю откликов.",btn("Создать профиль",'data-action="new-candidate"',"primary","plus"))}
-  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}${input("additionalEducation","Доп. образование",{max:160,value:p.get("additionalEducation"),placeholder:"Например, юриспруденция"})}
+  <form class="card pad row wrap" data-form="candidate-filter">${searchField(p.get("q"))}${input("skills","Навыки и опыт",{max:120,value:p.get("skills"),placeholder:"Например, SQL отчётность"})}${input("additionalEducation","Доп. образование",{max:160,value:p.get("additionalEducation"),placeholder:"Например, юриспруденция"})}
   <div class="row wrap" style="align-self:end">${submit("Найти","search")}${link("/hr/candidates","Сбросить","quiet")}</div></form>
   <section class="card">${rows.length?table([["Кандидат",23],["Email",22],["Образование",18],["Доп. образование",19],["Опыт",18]],rows):empty("Кандидаты не найдены","Измените параметры поиска или создайте профиль.","users")}${pagination(r.nextCursor)}</section>`;
 }
@@ -547,11 +552,12 @@ async function publicVacancyView(slug) {
   const v=await getJSON("/public/vacancies/"+enc(slug));
   const apply=new URLSearchParams(location.search).get("apply")==="1";
   if (apply) {
-    await prepareGuest();
+    const { syntheticOnly } = await prepareGuest();
     return `<div class="public-narrow stack"><div>${link("/vacancies/"+enc(slug),"К вакансии","quiet btn-sm","brief")}</div>
     ${heading("Отклик на вакансию",v.title)}
     <form data-form="public-application" data-vacancy="${esc(v.vacancyId)}" data-version="${esc(v.publishedVersionId)}" data-test="${esc(v.testVersionId||"")}" data-slug="${esc(slug)}" data-require-resume="${v.formFields.find(f=>f.id==="resume")?.required!==false?"1":"0"}" class="card pad stack">
-      ${pair(input("fullName","Фамилия и имя",{required:true,max:160,attrs:'autocomplete="name"'}),input("contact","Email для связи",{type:"email",required:true,max:254,attrs:'autocomplete="email"'}))}
+      ${syntheticOnly ? `<p class="note">Учебная форма. Используйте вымышленные имя, email и резюме.</p>${check("demoAcknowledged","Использую вымышленные данные")}` : ""}
+      ${pair(input("fullName","Фамилия и имя",{required:true,max:160,attrs:syntheticOnly?'autocomplete="off"':'autocomplete="name"'}),input("contact","Email для связи",{type:"email",required:true,max:254,...(syntheticOnly?{placeholder:"candidate@example.test",attrs:'autocomplete="off"'}:{attrs:'autocomplete="email"'})}))}
       ${resumeFields(v.formFields.find(f=>f.id==="resume")?.required!==false)}
       ${v.questions.length?`<div class="form-block stack"><h2>Вопросы при отклике</h2>${v.questions.map(q=>input("answer_"+q.id,q.text,{type:"textarea",required:q.required,optional:!q.required,max:2000,attrs:`data-question="${esc(q.id)}"`})).join("")}</div>`:""}
       ${errors}<div>${submit("Отправить отклик","check")}</div>
@@ -566,7 +572,7 @@ async function publicVacancyView(slug) {
 }
 function chatForm(thread) {
   const open=thread.questions.filter(q=>q.status==="open");
-  return `<section class="card pad stack"><h2>Уточнения по отклику</h2><p class="small muted">Ответы помогут кадровой команде проверить требования вакансии.</p>
+  return `<section class="card pad stack"><h2>Уточнения по отклику</h2><p class="small muted">Отвечайте только о рабочих навыках и опыте. Не указывайте сведения о здоровье, семье и контакты других людей.</p>
     <form class="stack" data-form="clarifications" data-id="${esc(thread.threadId)}">
     ${thread.questions.map((q,i)=>`<article class="criterion"><h3 class="chat-bubble">${esc(q.text)}</h3>${q.status==="answered"?`<div class="chat-answer pre">${esc(q.answer)}</div>`:input("q_"+q.questionId,"Ваш ответ",{type:"textarea",max:2000,attrs:`data-question="${esc(q.questionId)}"`,placeholder:"Ответьте на этот вопрос, если можете уточнить детали"})}</article>`).join("")}
     ${errors}${open.length?`<div>${submit("Отправить ответы","check")}</div>`:'<p class="note">Ответы сохранены. Спасибо!</p>'}</form></section>`;

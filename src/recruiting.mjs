@@ -41,7 +41,7 @@ function validateVacancy(body, previous = {}) {
     const code = field(item.code, `${key}.code`, 32) || "custom";
     if (code !== "custom" && !Object.hasOwn(skillCodes, code)) invalid(`${key}.code`, "invalid_code", "Выберите тип критерия.");
     const keywords = collection(item.keywords ?? [], `${key}.keywords`, 12).map(value => field(value, `${key}.keywords`, 70, true));
-    return { id, label, code, keywords, required: item.required !== false, question: field(item.question, `${key}.question`, 300) || `Расскажите подробнее, как ваш опыт связан с требованием «${label}».` };
+    return { id, label, code, keywords, reference: field(item.reference, `${key}.reference`, 250), required: item.required !== false, question: field(item.question, `${key}.question`, 300) || `Расскажите подробнее, как ваш опыт связан с требованием «${label}».` };
   });
   const testQuestions = collection(body.testQuestions ?? [], "testQuestions", 6).map((item, i) => {
     const key = `testQuestions.${i}`;
@@ -103,6 +103,10 @@ async function receive(ctx, isPublic) {
   }
   const fullName = field(b.fullName, "fullName", limits.name, true);
   const email = contact(b.contact, isPublic);
+  if (isPublic && (ctx.env.TRUST_PLATFORM || ctx.env.DEMO_MODE)) {
+    if (b.demoAcknowledged !== true && b.demoAcknowledged !== "on") invalid("demoAcknowledged", "required", "Подтвердите, что используете вымышленные данные.");
+    if (!/@[^@]+\.(test|example)$/i.test(email)) invalid("contact", "demo_email", "Введите вымышленный адрес, например candidate@example.test.");
+  }
   const contents = await prepareResume(ctx, isPublic ? version.formFields.find(f => f.id === "resume").required : true);
   const selectedChannel = isPublic ? "public_form" : (b.sourceChannel || "manual");
   if (!channels.has(selectedChannel) || (!isPublic && selectedChannel === "public_form")) invalid("sourceChannel", "invalid_channel", "Выберите источник отклика.");
@@ -126,7 +130,7 @@ async function receive(ctx, isPublic) {
   const receiptNumber = uuid().slice(0, 13).replace("-", "").toUpperCase();
   const { attachment } = contents;
   const source = make({
-    type: "resume", text: contents.text, extractStatus: contents.extractStatus,
+    type: "resume", text: contents.text, searchText: lowered(contents.text), extractStatus: contents.extractStatus,
     attachment: attachment && { name: attachment.name, size: attachment.size, type: attachment.type }
   }, applicationId);
   const app = make({
@@ -158,39 +162,44 @@ async function receive(ctx, isPublic) {
   if (attachment && response.body.applicationId !== app.id) await ctx.env.BUCKET.delete(source.id).catch(() => {});
   return response;
 }
-function locateEvidence(source, term) {
-  const origin = source.text;
-  const at = lowered(origin).indexOf(lowered(term));
-  if (at < 0) return null;
-  const lineStart = origin.lastIndexOf("\n", at - 1) + 1;
-  const ending = origin.indexOf("\n", at + term.length);
-  const start = Math.max(lineStart, at - 100);
-  const end = Math.min(ending < 0 ? origin.length : ending, Math.max(start + 260, at + term.length + 30));
-  const quote = origin.slice(start, end).trim();
-  return { sourceId: source.id, type: source.type, quote, offset: start };
+function termPattern(term) {
+  const literal = lowered(term.trim()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])`, "u");
+}
+function locateEvidence(source, patterns) {
+  const separators = /[.!?;\n]+|,\s*(?:но|однако|зато)\s+/giu;
+  let start = 0;
+  for (const end of [...source.text.matchAll(separators), { index: source.text.length, 0: "" }]) {
+    const clause = source.text.slice(start, end.index);
+    const clean = lowered(clause);
+    const match = patterns.map(pattern => pattern.exec(clean)).find(Boolean);
+    if (match && !/(?:^|[^\p{L}])(?:не|нет|без|отсутствует|not|never|no)(?:$|[^\p{L}])/u.test(clean)) {
+      const offset = start + Math.max(clause.length - clause.trimStart().length, match.index - 90);
+      const quote = source.text.slice(offset, Math.min(end.index, offset + 260)).trimEnd();
+      return { sourceId: source.id, type: source.type, quote, offset };
+    }
+    start = end.index + end[0].length;
+  }
+  return null;
 }
 function scoreCriterion(criterion, sources) {
   const fallback = lowered(criterion.label).split(/[^\p{L}\p{N}+#]+/u).filter(word => word.length >= 3 && !commonWord.has(word));
   const dictionary = skillCodes[criterion.code] || [];
-  const configured = [...criterion.keywords, ...dictionary];
+  const education = criterion.code === "education";
+  const configured = education && criterion.keywords.length ? criterion.keywords : [...criterion.keywords, ...dictionary];
   const terms = configured.length ? [...new Set(configured)] : [...new Set(fallback)].slice(0, 6);
+  const patterns = terms.map(termPattern);
   const evidence = [];
   let status = "needs_clarification";
   for (const source of sources) {
-    const clean = lowered(source.text);
-    if (source.type === "clarification" && /^(нет\b|нет[,.! ]|не имею|не работал|не использовал|у меня нет|опыта нет|не владею)/u.test(clean)) {
-      return { criterionId: criterion.id, label: criterion.label, required: criterion.required, status: "not_met", evidence: [{ sourceId: source.id, type: source.type, quote: source.text.slice(0, 260), offset: 0 }], question: null, hrOverride: null };
-    }
-    const found = terms.map(term => locateEvidence(source, term)).find(Boolean);
+    const found = locateEvidence(source, patterns);
     if (!found) continue;
-    const negative = /\bnot\s+(?:worked|used|know)|(?:не\s+(?:использовал|работал|владею|знаю)|нет\s+опыта|отсутствует\s+опыт)/iu.test(found.quote);
-    const tentative = /(?:изучаю|базовы|немного|начальный|учусь|теори)/iu.test(found.quote);
-    if (negative && status === "needs_clarification") status = "not_met";
-    if (!negative && (status !== "matched" || tentative === false)) status = tentative && status !== "matched" ? "partial" : "matched";
+    const tentative = education || /(?:изучаю|базовы|немного|начальный|учусь|теори)/iu.test(found.quote);
+    if (status !== "matched") status = tentative ? "partial" : "matched";
     evidence.push(found);
     if (evidence.length >= 3) break;
   }
-  return { criterionId: criterion.id, label: criterion.label, required: criterion.required, status, evidence, question: ["needs_clarification", "partial"].includes(status) ? criterion.question : null, hrOverride: null };
+  return { criterionId: criterion.id, label: criterion.label, reference: criterion.reference || "", required: criterion.required, status, evidence, question: ["needs_clarification", "partial"].includes(status) ? criterion.question : null, hrOverride: null };
 }
 async function runAssessment(ctx, e) {
   const app = await get(ctx, "application", e.payload.applicationId);

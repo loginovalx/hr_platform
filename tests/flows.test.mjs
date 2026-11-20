@@ -42,6 +42,28 @@ async function publish(hr, body = draft) {
 const stage = (hr,id,action,expectedVersion,expected=200,key) => hr("/hr/applications/"+id+"/transitions",post({action,expectedVersion},expected,key));
 const today = () => new Date().toISOString().slice(0,10);
 
+test("local evidence distinguishes a professional term from a substring or unrelated negation", async t => {
+  const {hr}=await fixture(t);
+  const vacancy=await publish(hr,{...draft,criteria:[
+    {id:"sql",label:"SQL",code:"sql"},
+    {id:"project_req",label:"Проектная работа",code:"project"},
+    {id:"education",label:"Профильное юридическое образование",code:"education",keywords:["юриспруденция"]}
+  ]});
+  const a=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Учебный Кандидат",resumeText:"Не использовал Python, но писал SQL. Настроил проектор. Университет, бакалавр физики."},201));
+  const items=(await hr("/hr/applications/"+a.applicationId+"/assessment")).items;
+  assert.deepEqual(items.map(item=>[item.criterionId,item.status]),[
+    ["sql","matched"],["project_req","needs_clarification"],["education","needs_clarification"]
+  ]);
+  assert.equal(items[0].evidence[0].quote,"писал SQL");
+  const other=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Другой Кандидат",resumeText:"Готов работать."},201));
+  const ranked="/hr/applications?vacancyId="+vacancy.vacancyId+"&priority=on&limit=1";
+  const first=await hr(ranked);
+  assert.equal(first.items[0].applicationId,a.applicationId);
+  assert.deepEqual(first.items[0].reviewProgress,{required:3,withEvidence:1,confirmed:0});
+  const second=await hr(ranked+"&cursor="+encodeURIComponent(first.nextCursor));
+  assert.equal(second.items[0].applicationId,other.applicationId);
+});
+
 test("interview draft is HR-only and sends only structured facts to YandexGPT", async t => {
   let calls = 0;
   const {hr,client} = await fixture(t, "0", { yandex: {
@@ -259,12 +281,26 @@ test("archive validation and pagination, attachment limits, manual clarification
   await visitor("/hr/resume-sources/"+info.resumeSource.sourceId,{expected:401});
   await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Слишком длинный текст",resumeText:"x".repeat(20001)},422));
 });
-test("demo dashboard uses synthetic persisted records", async t=>{
-  const {hr}=await fixture(t,"1");
+test("demo dashboard and guest intake use synthetic records", async t=>{
+  const {hr,client}=await fixture(t,"1",{demo:true});
   const stats=await hr("/hr/analytics");
-  assert.equal(stats.totals.received,20);
+  assert.equal(stats.totals.received,21);
   assert.equal(stats.totals.hired,4);
   assert.ok(stats.series.some(x=>x.value>0));
-  assert.equal((await hr("/hr/vacancies")).items.length,3);
+  assert.equal((await hr("/hr/vacancies")).items.length,4);
+  assert.match((await hr("/public/vacancies/hr-sector-consultant")).description,/Минимальный стаж не установлен/);
+  const consultant=(await hr("/hr/applications?vacancyId=vacancy_4&priority=on")).items[0];
+  const evidence=(await hr("/hr/applications/"+consultant.applicationId+"/assessment")).items[0];
+  assert.equal(evidence.status,"partial");
+  assert.match(evidence.reference,/2\.2\.1/);
+  const matching=(await hr("/hr/candidates?skills="+encodeURIComponent("ЮРИСПРУДЕНЦИЯ справки"))).items;
+  assert.equal(matching[0].candidateId,consultant.candidateId);
   assert.equal((await hr("/hr/survey-invitations?type=exit_feedback")).items.length,1);
+  const guest=client();
+  assert.equal((await guest("/public/session")).syntheticOnly,true);
+  const vacancy=await guest("/public/vacancies/hr-sector-consultant");
+  const application={vacancyId:vacancy.vacancyId,publishedVersionId:vacancy.publishedVersionId,fullName:"Учебный Соискатель",contact:"candidate@example.test",resumeText:"Учебный текст."};
+  await guest("/public/applications",post(application,422));
+  await guest("/public/applications",post({...application,demoAcknowledged:true,contact:"candidate@example.com"},422));
+  await guest("/public/applications",post({...application,demoAcknowledged:true},201));
 });

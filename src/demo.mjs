@@ -21,6 +21,18 @@ const demoVacancies = [
     title: "Специалист по документообороту", slug: "records-specialist", department: "Департамент организационной работы",
     description: "Организуйте регистрацию и движение документов в муниципальных подразделениях. В работе пригодятся внимательность, уверенная работа с офисными программами и умение соблюдать сроки.",
     criteria: [{ id: "req_office", label: "Опыт ведения документооборота", code: "office" }]
+  },
+  {
+    title: "Консультант сектора подбора кадров", slug: "hr-sector-consultant", department: "Департамент кадровой политики",
+    description: "Учебная вакансия по материалам кейса. Готовьте справки по кандидатам и сопровождайте подбор. Минимальный стаж не установлен (п. 2.1.2). Образование проверяется по документам.",
+    criteria: [
+      { id: "req_sector_education", label: "Профильное высшее образование или высшее и профильная профпереподготовка", code: "education",
+        keywords: ["юриспруденция", "государственное и муниципальное управление", "профессиональная переподготовка"],
+        reference: "Должностная инструкция консультанта сектора, п. 2.2.1" },
+      { id: "req_sector_law", label: "Знание нормативных актов о муниципальной службе, обращениях и труде", code: "custom",
+        reference: "Должностная инструкция из материалов кейса: 25-ФЗ, 59-ФЗ, 99-З и ТК РФ",
+        question: "Как вы проверите применимые нормы 25-ФЗ, 59-ФЗ, 99-З и ТК РФ в рабочей ситуации?" }
+    ]
   }
 ];
 const demoPeople = [
@@ -33,9 +45,10 @@ const demoPeople = [
   ["Михаил Борисов", 2, "received", null, "public_form"], ["Алина Новикова", 2, "received", "rejected", "email"],
   ["Павел Романов", 0, "received", null, "public_form"], ["Андрей Егоров", 1, "review", "rejected", "archive"],
   ["Екатерина Фомина", 0, "decision", "hired", "public_form"], ["Ольга Алексеева", 0, "received", null, "public_form"],
-  ["Виктор Лебедев", 2, "received", null, "archive"], ["Дарья Рябова", 1, "review", null, "public_form"]
+  ["Виктор Лебедев", 2, "received", null, "archive"], ["Дарья Рябова", 1, "review", null, "public_form"],
+  ["Ольга Ланская", 3, "review", null, "email"]
 ];
-const demoAge = [0,0,0,1,1,2,2,2,2,3,4,4,4,5,5,5,5,6,9,14];
+const demoAge = [0,0,0,1,1,2,2,2,2,3,4,4,4,5,5,5,5,6,9,14,0];
 async function ensureData(ctx) {
   if (await get(ctx, "system", "secret", false)) return;
   const entries = [];
@@ -70,8 +83,10 @@ async function ensureData(ctx) {
       if (i === 0) firstCandidate = person;
       const resume = vIndex === 0
         ? "Опыт\nДелал SQL-запросы для отчётности городского сервиса.\nСобирал метрики и воронку по пользовательским сценариям.\n" + (i % 2 ? "Автоматизировал выгрузки на Python." : "Работал с данными в команде из трёх человек.")
-        : vIndex === 1 ? "Координация городского проекта и подготовка статусов.\nПереговоры с участниками и подготовка дорожной карты." : "Ведение документооборота подразделения.\nПодготовка таблиц в Excel.";
-      const source = add("source", make({ type: "resume", text: resume, extractStatus: "not_needed", attachment: null }, id, at));
+        : vIndex === 1 ? "Координация городского проекта и подготовка статусов.\nПереговоры с участниками и подготовка дорожной карты."
+        : vIndex === 3 ? "Высшее образование: филология.\nПрофессиональная переподготовка по программе Юриспруденция.\nГотовила справки к собеседованиям."
+        : "Ведение документооборота подразделения.\nПодготовка таблиц в Excel.";
+      const source = add("source", make({ type: "resume", text: resume, searchText: lowered(resume), extractStatus: "not_needed", attachment: null }, id, at));
       const s = { ...stageState(), currentStage, outcome, rejectedAtStage: outcome === "rejected" ? currentStage : null, version: stageOrder.indexOf(currentStage) + (outcome ? 1 : 0) };
       const answers = version.testQuestions.map((q, j) => ({ questionId: q.id, question: q.text, required: q.required, value: sourceChannel === "public_form" ? (j ? "Проверяю пропуски, дубликаты и сверяю агрегаты." : "Собрал отчёт по активности пользователей. Подготовил витрину и проверил метрики на SQL.") : "" }));
       const app = make({
@@ -80,7 +95,7 @@ async function ensureData(ctx) {
         fullName: i === 14 ? firstCandidate.fullName : fullName, searchName: lowered(i === 14 ? firstCandidate.fullName : fullName), contact: i === 14 ? firstCandidate.contact : contact,
         sourceId: source.id, sourceChannel, sourceReceivedAt: sourceChannel === "archive" && i === 18 ? null : at,
         receivedAt: at, acceptedAt: at, importedAt: sourceChannel === "public_form" ? null : traceTimestamp(1),
-        candidateId: i === 14 ? firstCandidate.id : outcome || [2, 6, 9, 11].includes(i) ? person.id : null,
+        candidateId: i === 14 ? firstCandidate.id : outcome || [2, 6, 9, 11, 20].includes(i) ? person.id : null,
         assessmentStatus: "ready", clarificationThreadId: null, stage: s
       }, v.id, at, id);
       const items = version.criteria.map(c => scoreCriterion(c, [source]));

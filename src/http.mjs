@@ -49,6 +49,26 @@ async function publicRoutes(ctx, method, p) {
   if (method === "POST" && p.join("/") === "clarification-sessions") return exchangeClarification(ctx);
   missing();
 }
+async function prioritizedApplications(ctx, conditions, params) {
+  const { limit, after } = pageOptions(ctx.url);
+  const cursor = after ? `WHERE (priority, sort) < (coalesce((SELECT priority FROM ranked WHERE id=?),0), ?)
+    OR (priority=coalesce((SELECT priority FROM ranked WHERE id=?),0) AND sort=? AND id>?)` : "";
+  const anchor = after ? [after.id, after.sort, after.id, after.sort, after.id] : [];
+  const found = await rows(ctx, `WITH filtered AS (
+    SELECT * FROM records WHERE kind='application' AND ${conditions.join(" AND ")}
+  ), ranked AS (
+    SELECT f.*, coalesce((
+      SELECT sum(CASE WHEN json_extract(c.value,'$.hrOverride.status')='matched' THEN 9
+        WHEN json_extract(c.value,'$.hrOverride') IS NULL AND json_extract(c.value,'$.status') IN ('matched','partial') AND json_array_length(json_extract(c.value,'$.evidence'))>0 THEN 1
+        ELSE 0 END)
+      FROM json_each(assessment.data,'$.items') c WHERE json_extract(c.value,'$.required')=1
+    ),0) AS priority
+    FROM filtered f LEFT JOIN records assessment ON assessment.kind='assessment' AND assessment.id=f.id
+  ) SELECT * FROM ranked ${cursor} ORDER BY priority DESC, sort DESC, id LIMIT ?`, ...params, ...anchor, limit + 1);
+  const items = found.slice(0, limit);
+  const last = items.at(-1);
+  return { items, nextCursor: found.length > limit ? `${last.sort}~${last.id}` : null };
+}
 async function hrApplications(ctx, method, p) {
   if (p.length === 1) {
     if (method === "POST") return receive(ctx, false);
@@ -64,8 +84,20 @@ async function hrApplications(ctx, method, p) {
     if (stageOrder.includes(stage)) { conditions.push("json_extract(data,'$.stage.currentStage')=? AND json_extract(data,'$.stage.outcome') IS NULL"); params.push(stage); }
     if (["hired","rejected"].includes(stage)) { conditions.push("json_extract(data,'$.stage.outcome')=?"); params.push(stage); }
     if (channel && channels.has(channel)) { conditions.push("json_extract(data,'$.sourceChannel')=?"); params.push(channel); }
-    const found = await page(ctx, "application", conditions, params);
-    return result({ ...found, items: found.items.map(applicationSummary) });
+    const found = vacancyId && ctx.url.searchParams.get("priority") === "on"
+      ? await prioritizedApplications(ctx, conditions, params) : await page(ctx, "application", conditions, params);
+    const ids = found.items.map(item => item.id);
+    const assessments = ids.length ? await rows(ctx,
+      `SELECT * FROM records WHERE kind='assessment' AND id IN (${ids.map(() => "?").join(",")})`, ...ids) : [];
+    const byId = new Map(assessments.map(item => [item.id, item]));
+    return result({ ...found, items: found.items.map(item => {
+      const required = byId.get(item.id)?.items.filter(criterion => criterion.required);
+      return { ...applicationSummary(item), reviewProgress: required?.length ? {
+        required: required.length,
+        withEvidence: required.filter(criterion => criterion.evidence.length).length,
+        confirmed: required.filter(criterion => criterion.hrOverride?.status === "matched").length
+      } : null };
+    }) });
   }
   if (method === "GET") await processPending(ctx, p[1]);
   const app = await get(ctx, "application", p[1]);
@@ -130,10 +162,18 @@ async function hrRoutes(ctx, method, p) {
     if (p.length === 1 && method === "GET") {
       const q = field(ctx.url.searchParams.get("q"), "q", limits.name);
       const additional = field(ctx.url.searchParams.get("additionalEducation"), "additionalEducation", 160);
+      const skills = field(ctx.url.searchParams.get("skills"), "skills", 120);
       const conditions = [];
       const params = [];
       if (q) { conditions.push("instr(json_extract(data,'$.searchName'),?)>0"); params.push(lowered(q)); }
       if (additional) { conditions.push("instr(json_extract(data,'$.additionalEducationSearch'),?)>0"); params.push(lowered(additional)); }
+      for (const word of new Set(lowered(skills).split(/\s+/).filter(Boolean).slice(0, 6))) {
+        conditions.push(`(instr(lower(coalesce(json_extract(data,'$.experience'),'')),?)>0 OR EXISTS (
+          SELECT 1 FROM records a JOIN records s ON s.kind='source' AND s.id=json_extract(a.data,'$.sourceId')
+          WHERE a.kind='application' AND json_extract(a.data,'$.candidateId')=records.id
+          AND instr(coalesce(json_extract(s.data,'$.searchText'),lower(json_extract(s.data,'$.text'))),?)>0))`);
+        params.push(word, word);
+      }
       const found = await page(ctx, "candidate", conditions, params);
       return result({ ...found, items: found.items.map(candidateSummary) });
     }
@@ -229,7 +269,7 @@ async function api(req, env, execution, url) {
   if (group === "auth" && route === "session" && method === "GET") return json({ authenticated: Boolean(ctx.actor), actor: ctx.actor ? { role: ctx.actor.role, name: ctx.actor.name, hosted: Boolean(ctx.actor.hosted) } : null, demoAvailable: env.DEMO_MODE === true });
   if (group === "public" && route === "session" && method === "GET") {
     const id = (await visitor(ctx)) || uuid();
-    return renderResult(ctx, result({ ready: true }, 200, { session: ["visitor", id] }));
+    return renderResult(ctx, result({ ready: true, syntheticOnly: Boolean(env.TRUST_PLATFORM || env.DEMO_MODE) }, 200, { session: ["visitor", id] }));
   }
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     sameOrigin(ctx);

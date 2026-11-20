@@ -40,7 +40,8 @@ async function generateInterviewQuestions(env, facts) {
     for (const row of questions.slice(0, 8)) {
       if (!known.has(row?.criterionKey) || typeof row.question !== "string" || drafts.has(row.criterionKey)) continue;
       const question = row.question.trim();
-      if (question && question.length <= 300 && question.endsWith("?") && !/[\r\n]/u.test(question)) drafts.set(row.criterionKey, question);
+      const personalTopic = /семейн|беремен|декрет|религи|вероисповед|национальност|инвалидност|здоровь|детей|сколько вам лет/iu;
+      if (question && question.length <= 300 && question.endsWith("?") && !/[\r\n]/u.test(question) && !personalTopic.test(question)) drafts.set(row.criterionKey, question);
     }
     return drafts;
   } catch {
