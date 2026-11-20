@@ -67,7 +67,7 @@ async function interviewDraft(ctx, app) {
       }
     };
   });
-  const facts = entries.map(({ fact }) => fact).filter(({ requirementCode }) => Object.hasOwn(skillCodes, requirementCode));
+  const facts = entries.map(({ fact }) => fact).filter(({ requirementCode }) => skillCodes.has(requirementCode));
   const generated = await generateInterviewQuestions(ctx.env, facts);
   const questions = entries.map(({ criterion, fact }) => ({
     criterionId: criterion.id,

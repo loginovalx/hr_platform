@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import worker from "../dist/server/index.js";
@@ -47,7 +49,7 @@ export async function localRuntime(options = {}) {
     YANDEX_MODEL: options.yandex?.model ?? process.env.YANDEX_MODEL,
     YANDEX_FETCH: options.yandex?.fetch,
     GIGACHAT_AUTH_KEY: options.gigachat?.key ?? process.env.GIGACHAT_AUTH_KEY,
-    GIGACHAT_SCOPE: process.env.GIGACHAT_SCOPE,
+    GIGACHAT_SCOPE: options.gigachat?.scope ?? process.env.GIGACHAT_SCOPE,
     GIGACHAT_MODEL: process.env.GIGACHAT_MODEL,
     GIGACHAT_FETCH: options.gigachat?.fetch,
     DB: {
@@ -76,9 +78,9 @@ export async function localRuntime(options = {}) {
   };
   return { env, close: () => database.close() };
 }
-function extractPdf(bytes) {
+function extractPdfText(bytes) {
   return new Promise((resolveText, reject) => {
-    const child = spawn("pdftotext", ["-f", "1", "-l", "10", "-enc", "UTF-8", "-", "-"], { stdio: ["pipe", "pipe", "ignore"], timeout: 3000 });
+    const child = spawn("pdftotext", ["-enc", "UTF-8", "-", "-"], { stdio: ["pipe", "pipe", "ignore"], timeout: 3000 });
     const pieces = [];
     let size = 0;
     child.stdout.on("data", chunk => {
@@ -94,6 +96,29 @@ function extractPdf(bytes) {
     });
     child.stdin.end(bytes);
   });
+}
+
+const runPdfTool = promisify(execFile);
+async function extractPdf(bytes) {
+  const text = await extractPdfText(bytes);
+  if (/\p{L}/u.test(text)) return text;
+
+  const dir = await mkdtemp(join(tmpdir(), "kadry-ocr-"));
+  try {
+    const input = join(dir, "resume.pdf");
+    await writeFile(input, bytes, { mode: 0o600 });
+    await runPdfTool("pdftoppm", ["-f", "1", "-l", "5", "-scale-to", "1700", "-gray", "-png", input, join(dir, "page")], { timeout: 8000 });
+    const pages = (await readdir(dir)).filter(name => /^page-\d+\.png$/.test(name)).sort();
+    const extracted = [];
+    for (const page of pages) {
+      const { stdout } = await runPdfTool("tesseract", [join(dir, page), "stdout", "-l", "rus+eng"], { timeout: 8000, maxBuffer: 256 * 1024 });
+      extracted.push(stdout);
+      if (extracted.join("\n").length >= 20000) break;
+    }
+    return extracted.join("\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 export async function openServer(options = {}) {
   const runtime = await localRuntime(options);

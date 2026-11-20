@@ -1,17 +1,6 @@
 const channels = new Set(["public_form", "email", "archive", "manual", "unknown"]);
-const skillCodes = {
-  sql: ["SQL", "PostgreSQL", "ClickHouse", "SQLite"],
-  python: ["Python", "Pandas", "NumPy"],
-  analytics: ["аналитика", "аналитики", "аналитиком", "анализ данных", "воронка", "дашборд", "отчётность", "отчетность", "метрики"],
-  api: ["REST API", " API", "FastAPI", "HTTP"],
-  communication: ["коммуникация", "коммуникации", "переговоры", "презентации", "стейкхолдер"],
-  education: ["образование", "бакалавр", "магистр", "университет", "выпускник"],
-  project: ["проект", "координация", "roadmap", "дорожная карта"],
-  office: ["Excel", "Word", "документооборот", "делопроизводство"],
-  experience: []
-};
+const skillCodes = new Set(["sql", "python", "analytics", "api", "communication", "education", "project", "office", "experience"]);
 const statuses = new Set(["matched", "partial", "needs_clarification", "not_met"]);
-const commonWord = new Set(["работа", "работы", "наличие", "умение", "знание", "опыт"]);
 function validateVacancy(body, previous = {}) {
   const title = field(body.title, "title", limits.title, true);
   const department = field(body.department, "department", limits.department, true);
@@ -39,11 +28,11 @@ function validateVacancy(body, previous = {}) {
     const id = listId(item, key);
     const label = field(item.label ?? item.text, `${key}.label`, 160, true);
     const code = field(item.code, `${key}.code`, 32) || "custom";
-    if (code !== "custom" && !Object.hasOwn(skillCodes, code)) invalid(`${key}.code`, "invalid_code", "Выберите тип критерия.");
+    if (code !== "custom" && !skillCodes.has(code)) invalid(`${key}.code`, "invalid_code", "Выберите тип критерия.");
     const keywords = collection(item.keywords ?? [], `${key}.keywords`, 12).map(value => field(value, `${key}.keywords`, 70, true));
     return { id, label, code, keywords, reference: field(item.reference, `${key}.reference`, 250), required: item.required !== false, question: field(item.question, `${key}.question`, 300) || `Расскажите подробнее, как ваш опыт связан с требованием «${label}».` };
   });
-  const testQuestions = collection(body.testQuestions ?? [], "testQuestions", 6).map((item, i) => {
+  const testQuestions = collection(body.testQuestions ?? previous.draft?.testQuestions ?? [], "testQuestions", 6).map((item, i) => {
     const key = `testQuestions.${i}`;
     return { id: listId(item, key), text: field(item.text, `${key}.text`, 400, true), required: item.required !== false };
   });
@@ -54,7 +43,7 @@ const vacancySummary = v => ({ vacancyId: v.id, slug: v.slug, title: v.draft.tit
 const publicVacancy = (v, version) => ({
   vacancyId: v.id, slug: version.slug, publishedVersionId: version.id, title: version.title,
   department: version.department, description: version.description, schedule: version.schedule, location: version.location,
-  formFields: version.formFields, testVersionId: version.testVersionId, questions: version.testQuestions
+  formFields: version.formFields, testVersionId: null, questions: []
 });
 function newVersion(v) {
   return make({ ...v.draft, vacancyId: v.id, criteriaVersionId: uuid(), testVersionId: v.draft.testQuestions.length ? uuid() : null }, v.id);
@@ -98,32 +87,18 @@ async function receive(ctx, isPublic) {
   const vacancy = await get(ctx, "vacancy", b.vacancyId);
   if (!vacancy.publishedVersionId) fail(409, "vacancy_not_published", "Сначала опубликуйте вакансию.");
   const version = await get(ctx, "version", vacancy.publishedVersionId);
-  if (isPublic && (b.publishedVersionId !== version.id || (b.testVersionId || null) !== version.testVersionId)) {
+  if (isPublic && b.publishedVersionId !== version.id) {
     fail(409, "vacancy_version_changed", "Вакансия обновилась. Откройте форму ещё раз.");
   }
   const fullName = field(b.fullName, "fullName", limits.name, true);
   const email = contact(b.contact, isPublic);
   if (isPublic && (ctx.env.TRUST_PLATFORM || ctx.env.DEMO_MODE)) {
-    if (b.demoAcknowledged !== true && b.demoAcknowledged !== "on") invalid("demoAcknowledged", "required", "Подтвердите, что используете вымышленные данные.");
     if (!/@[^@]+\.(test|example)$/i.test(email)) invalid("contact", "demo_email", "Введите вымышленный адрес, например candidate@example.test.");
   }
-  const contents = await prepareResume(ctx, isPublic ? version.formFields.find(f => f.id === "resume").required : true);
+  const contents = await prepareResume(ctx, isPublic ? version.formFields.find(f => f.id === "resume").required : true, isPublic);
   const selectedChannel = isPublic ? "public_form" : (b.sourceChannel || "manual");
   if (!channels.has(selectedChannel) || (!isPublic && selectedChannel === "public_form")) invalid("sourceChannel", "invalid_channel", "Выберите источник отклика.");
   const sourceReceivedAt = isPublic ? isoNow() : dateValue(b.sourceReceivedAt, "sourceReceivedAt");
-  const supplied = new Map();
-  if (isPublic) {
-    for (const entry of collection(b.answers ?? [], "answers", 6)) {
-      const q = version.testQuestions.find(x => x.id === entry?.questionId);
-      if (!q || supplied.has(q.id)) invalid("answers", "invalid_question", "В форме есть неизвестный или повторяющийся вопрос.");
-      supplied.set(q.id, field(entry.value, `answer_${q.id}`, limits.answer));
-    }
-  }
-  const answers = version.testQuestions.map(q => ({ questionId: q.id, question: q.text, required: q.required, value: supplied.get(q.id) || "" }));
-  if (isPublic) {
-    const errors = answers.filter(q => q.required && !q.value).map(q => ({field: `answer_${q.questionId}`, code: "required"}));
-    if (errors.length) fail(422, "validation_failed", "Ответьте на обязательные вопросы.", errors);
-  }
   const acceptedAt = isoNow();
   const receivedAt = sourceReceivedAt || acceptedAt;
   const applicationId = uuid();
@@ -131,15 +106,16 @@ async function receive(ctx, isPublic) {
   const { attachment } = contents;
   const source = make({
     type: "resume", text: contents.text, searchText: lowered(contents.text), extractStatus: contents.extractStatus,
-    readable: /\p{L}/u.test(contents.text.replace(/\b(?:https?:\/\/|www\.)\S+/giu, "")),
+    readable: hasResumeText(contents.text),
     attachment: attachment && { name: attachment.name, size: attachment.size, type: attachment.type }
   }, applicationId);
+  const candidate = candidateFromApplication({ id: applicationId, fullName, contact: email, acceptedAt });
   const app = make({
     vacancyTitle: version.title, versionId: version.id, criteriaVersionId: version.criteriaVersionId,
-    testVersionId: version.testVersionId, testStatus: !answers.length ? "not_required" : isPublic && answers.some(q => q.value) ? "completed" : "not_completed",
-    answers, fullName, searchName: lowered(fullName), contact: email, sourceId: source.id, sourceChannel: selectedChannel,
+    testVersionId: null, testStatus: "not_required",
+    answers: [], fullName, searchName: lowered(fullName), contact: email, sourceId: source.id, sourceChannel: selectedChannel,
     sourceReceivedAt, importedAt: isPublic ? null : acceptedAt, receivedAt, acceptedAt,
-    candidateId: null, assessmentStatus: "pending", clarificationThreadId: null, stage: stageState()
+    candidateId: candidate.id, assessmentStatus: "pending", clarificationThreadId: null, stage: stageState()
   }, vacancy.id, receivedAt, applicationId);
   const visitorId = isPublic ? (await visitor(ctx)) || uuid() : null;
   const receipt = make({ applicationId, visitorId, expiresAt: inDays(7) }, applicationId, acceptedAt, receiptNumber);
@@ -149,7 +125,7 @@ async function receive(ctx, isPublic) {
   let response;
   try {
     response = await commit(ctx, [
-      ...expect(ctx, "vacancy", vacancy), put(ctx, "application", app), put(ctx, "source", source),
+      ...expect(ctx, "vacancy", vacancy), put(ctx, "application", app), put(ctx, "source", source), put(ctx, "candidate", candidate),
       put(ctx, "receipt", receipt), put(ctx, "stage_event", first), created.stmt
     ], result({ applicationId, receiptNumber, assessmentStatus: "pending" }, 201, { session: isPublic ? ["visitor", visitorId] : null, process: created.id }));
   } catch (error) {
@@ -163,89 +139,102 @@ async function receive(ctx, isPublic) {
   if (attachment && response.body.applicationId !== app.id) await ctx.env.BUCKET.delete(source.id).catch(() => {});
   return response;
 }
-function termPattern(term) {
-  const literal = lowered(term.trim()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])`, "u");
-}
-function locateEvidence(source, patterns) {
-  const separators = /[.!?;\n]+|,\s*(?:но|однако|зато)\s+/giu;
-  let start = 0;
-  for (const end of [...source.text.matchAll(separators), { index: source.text.length, 0: "" }]) {
-    const clause = source.text.slice(start, end.index);
-    const clean = lowered(clause);
-    const match = patterns.map(pattern => pattern.exec(clean)).find(Boolean);
-    if (match && !/(?:^|[^\p{L}])(?:не|нет|без|отсутствует|not|never|no)(?:$|[^\p{L}])/u.test(clean)) {
-      const offset = start + Math.max(clause.length - clause.trimStart().length, match.index - 90);
-      const quote = source.text.slice(offset, Math.min(end.index, offset + 260)).trimEnd();
-      return { sourceId: source.id, type: source.type, quote, offset };
-    }
-    start = end.index + end[0].length;
-  }
-  return null;
-}
-function scoreCriterion(criterion, sources) {
-  const fallback = lowered(criterion.label).split(/[^\p{L}\p{N}+#]+/u).filter(word => word.length >= 3 && !commonWord.has(word));
-  const dictionary = skillCodes[criterion.code] || [];
-  const education = criterion.code === "education";
-  const configured = education && criterion.keywords.length ? criterion.keywords : [...criterion.keywords, ...dictionary];
-  const terms = configured.length ? [...new Set(configured)] : [...new Set(fallback)].slice(0, 6);
-  const patterns = terms.map(termPattern);
-  const evidence = [];
-  let status = "needs_clarification";
-  for (const source of sources) {
-    const found = locateEvidence(source, patterns);
-    if (!found) continue;
-    const tentative = education || /(?:изучаю|базовы|немного|начальный|учусь|теори)/iu.test(found.quote);
-    if (status !== "matched") status = tentative ? "partial" : "matched";
-    evidence.push(found);
-    if (evidence.length >= 3) break;
-  }
-  return { criterionId: criterion.id, label: criterion.label, reference: criterion.reference || "", required: criterion.required, status, evidence, question: ["needs_clarification", "partial"].includes(status) ? criterion.question : null, hrOverride: null };
-}
 async function runAssessment(ctx, e) {
   const app = await get(ctx, "application", e.payload.applicationId);
-  const version = await get(ctx, "version", app.versionId);
-  const source = await get(ctx, "source", app.sourceId);
-  const old = await get(ctx, "assessment", app.id, false);
-  if (e.type === "application.created" && old) return [];
-  const base = [source, ...app.answers.filter(q => q.value).map(q => ({ id: q.questionId, type: "test", text: q.value }))];
-  let items;
+  const [version, source, old, thread] = await Promise.all([
+    get(ctx, "version", app.versionId), get(ctx, "source", app.sourceId),
+    get(ctx, "assessment", app.id, false),
+    app.clarificationThreadId ? get(ctx, "thread", app.clarificationThreadId) : null
+  ]);
   const changes = [...expect(ctx, "application", app)];
-  if (e.type === "application.created") {
-    items = version.criteria.map(criterion => scoreCriterion(criterion, base));
+  let resume = source;
+  if (!hasResumeText(source.text) && source.attachment?.type === "application/pdf" && ctx.env.extractPdf) {
+    const file = await ctx.env.BUCKET?.get(source.id);
+    if (file) {
+      const bytes = new Uint8Array(await new Response(file.body).arrayBuffer());
+      const extracted = await readAttachmentText(ctx, "pdf", bytes);
+      resume = { ...source, ...extracted, readable: hasResumeText(extracted.text), searchText: lowered(extracted.text) };
+      changes.push(...expect(ctx, "source", source), update(ctx, "source", resume));
+    }
+  }
+  const sources = [
+    resume,
+    ...app.answers.filter(q => q.value).map(q => ({ id: q.questionId, type: "test", text: q.value })),
+    ...(thread?.questions || []).filter(q => q.answer && q.answerId).map(q => ({ id: q.answerId, type: "clarification", text: q.answer }))
+  ];
+  let analysis;
+  let issue;
+  if (!hasResumeText(resume.text)) {
+    const missingPdfTools = resume.attachment?.type === "application/pdf" && (!ctx.env.extractPdf || resume.extractStatus === "tool_missing");
+    issue = missingPdfTools ? "pdf_extractor_unavailable" : "resume_unreadable";
+  }
+  else {
+    try {
+      analysis = await analyzeResume(ctx.env, app, version, sources);
+    } catch (error) {
+      issue = error.code?.startsWith("gigachat_") ? error.code : "gigachat_unavailable";
+      if (/CERT|SELF_SIGNED/u.test(error.cause?.code || "")) issue = "gigachat_tls";
+    }
+  }
+  if (issue) return [...changes, update(ctx, "application", { ...app, assessmentStatus: "failed", analysisIssue: issue })];
+
+  const overrides = new Map(old?.items.map(item => [item.criterionId, item.hrOverride]) || []);
+  const items = analysis.items.map(item => ({ ...item, hrOverride: overrides.get(item.criterionId) || null }));
+  const assessedAt = isoNow();
+  const assessment = { ...analysis, items, criteriaVersionId: app.criteriaVersionId, assessmentStatus: "ready", assessedAt };
+  if (old) changes.push(...expect(ctx, "assessment", old), update(ctx, "assessment", { ...old, ...assessment }));
+  else changes.push(put(ctx, "assessment", make(assessment, app.id, assessedAt, app.id)));
+
+  if (!thread) {
     const questions = items.filter(item => item.question).map(item => ({ questionId: uuid(), criterionId: item.criterionId, text: item.question, status: "open" }));
     if (questions.length) {
-      const thread = make({ applicationId: app.id, questions, assessmentId: app.id }, app.id);
-      app.clarificationThreadId = thread.id;
-      changes.push(put(ctx, "thread", thread));
+      const created = make({ applicationId: app.id, questions, assessmentId: app.id }, app.id);
+      app.clarificationThreadId = created.id;
+      changes.push(put(ctx, "thread", created));
     }
-    changes.push(put(ctx, "assessment", make({ criteriaVersionId: app.criteriaVersionId, assessmentStatus: "ready", items, assessedAt: isoNow() }, app.id, isoNow(), app.id)));
-  } else {
-    const answer = await get(ctx, "source", e.payload.answerId);
-    const criterion = version.criteria.find(c => c.id === e.payload.criterionId);
-    const measured = scoreCriterion(criterion, [answer, ...base]);
-    items = old.items.map(item => item.criterionId === criterion.id ? { ...measured, hrOverride: item.hrOverride } : item);
-    changes.push(...expect(ctx, "assessment", old), update(ctx, "assessment", { ...old, items, assessedAt: isoNow() }));
   }
-  changes.push(update(ctx, "application", { ...app, assessmentStatus: "ready" }));
+  changes.push(update(ctx, "application", { ...app, assessmentStatus: "ready", analysisIssue: null }));
   return changes;
 }
-async function processEvent(ctx, eventId) {
+
+async function requestAssessment(ctx, app) {
+  if (!ctx.env.GIGACHAT_AUTH_KEY?.trim()) fail(503, "gigachat_not_configured", "Укажите GIGACHAT_AUTH_KEY и перезапустите сервер.");
+  if (app.assessmentStatus === "pending") return result({ assessmentStatus: "pending" }, 202);
+  const requested = event(ctx, "assessment.requested", { applicationId: app.id });
+  return commit(ctx, [
+    ...expect(ctx, "application", app),
+    update(ctx, "application", { ...app, assessmentStatus: "pending", analysisIssue: null }), requested.stmt
+  ], result({ assessmentStatus: "pending" }, 202, { process: requested.id }));
+}
+
+const inFlightEvents = new WeakMap();
+function processEvent(ctx, eventId) {
+  if (!inFlightEvents.has(ctx.env.DB)) inFlightEvents.set(ctx.env.DB, new Map());
+  const pending = inFlightEvents.get(ctx.env.DB);
+  if (!pending.has(eventId)) {
+    const running = completeEvent(ctx, eventId).finally(() => pending.delete(eventId));
+    pending.set(eventId, running);
+  }
+  return pending.get(eventId);
+}
+
+const assessmentEvents = new Set(["application.created", "assessment.requested", "clarification.answered"]);
+async function completeEvent(ctx, eventId) {
   const work = { ...ctx, idem: null };
   for (let attempt = 0; attempt < 3; attempt++) {
     const e = await get(work, "event", eventId, false);
     if (!e || e.doneAt || e.failedAt) return;
     try {
-      const changes = ["application.created", "clarification.answered"].includes(e.type) ? await runAssessment(work, e) : [];
+      const changes = assessmentEvents.has(e.type) ? await runAssessment(work, e) : [];
       await commit(work, [...expect(work, "event", e), ...changes, update(work, "event", { ...e, doneAt: isoNow() })]);
       return;
     } catch (error) {
       if (error.code === "version_conflict") continue;
       const attempts = (e.attempts || 0) + 1;
       const changes = [...expect(work, "event", e), update(work, "event", { ...e, attempts, failedAt: attempts >= 3 ? isoNow() : null })];
-      if (attempts >= 3 && e.type === "application.created") {
+      if (attempts >= 3 && assessmentEvents.has(e.type)) {
         const app = await get(work, "application", e.payload.applicationId);
-        changes.push(...expect(work, "application", app), update(work, "application", { ...app, assessmentStatus: "failed" }));
+        changes.push(...expect(work, "application", app), update(work, "application", { ...app, assessmentStatus: "failed", analysisIssue: "assessment_unavailable" }));
       }
       try { await commit(work, changes); } catch (err) { if (err.code !== "version_conflict") throw err; }
     }
@@ -263,18 +252,24 @@ async function processPending(ctx, scope) {
 }
 async function assessView(ctx, app) {
   const value = await get(ctx, "assessment", app.id, false);
-  if (!value) {
-    const version = await get(ctx, "version", app.versionId);
-    const items = version.criteria.map(c => ({ criterionId: c.id, label: c.label, status: "needs_clarification", question: c.question, evidence: [], hrOverride: null, required: c.required }));
-    return { assessmentId: null, criteriaVersionId: app.criteriaVersionId, assessmentStatus: app.assessmentStatus, items };
-  }
-  return { assessmentId: value.id, criteriaVersionId: value.criteriaVersionId, assessmentStatus: app.assessmentStatus, assessedAt: value.assessedAt, items: value.items };
+  const current = value?.provider === "gigachat";
+  const version = current ? null : await get(ctx, "version", app.versionId);
+  const overrides = new Map(value?.items.map(item => [item.criterionId, item.hrOverride]) || []);
+  const items = current ? value.items : version.criteria.map(c => emptyAssessmentItem(c, overrides.get(c.id)));
+  return {
+    assessmentId: value?.id || null, criteriaVersionId: app.criteriaVersionId,
+    assessmentStatus: app.assessmentStatus === "ready" && !current ? "not_analyzed" : app.assessmentStatus,
+    issue: app.analysisIssue || null, provider: current ? value.provider : null,
+    summary: current ? value.summary : null, education: current ? value.education ?? null : null,
+    assessedAt: current ? value.assessedAt : null, items
+  };
 }
+
 async function overrideAssessment(ctx, app, criterionId) {
   let a = await get(ctx, "assessment", app.id, false);
   if (!statuses.has(ctx.body.status)) invalid("status", "invalid_status", "Выберите статус критерия.");
   const reason = field(ctx.body.reason, "reason", limits.notes, true);
-  const items = a?.items ?? (await assessView(ctx, app)).items;
+  const items = (await assessView(ctx, app)).items;
   if (!items.some(i => i.criterionId === criterionId)) missing();
   const hrOverride = { status: ctx.body.status, reason, actorId: ctx.actor.id, actorName: ctx.actor.name, at: isoNow() };
   const revised = items.map(item => item.criterionId === criterionId ? { ...item, hrOverride } : item);
@@ -288,6 +283,13 @@ async function overrideAssessment(ctx, app, criterionId) {
   }
   stmts.push(put(ctx, "override", make({ applicationId: app.id, criterionId, ...hrOverride }, app.id)));
   return commit(ctx, stmts, result({ assessmentId: a.id, criteriaVersionId: app.criteriaVersionId, assessmentStatus: app.assessmentStatus, items: revised }));
+}
+function candidateFromApplication(app) {
+  return make({
+    fullName: app.fullName, searchName: lowered(app.fullName), contact: app.contact,
+    education: "", additionalEducation: "", additionalEducationSearch: "", experience: "",
+    factsSource: { type: "resume", applicationId: app.id, at: app.acceptedAt }
+  });
 }
 function candidateSummary(person) {
   return { candidateId: person.id, fullName: person.fullName, contact: person.contact, education: person.education, additionalEducation: person.additionalEducation || "", experience: person.experience, updatedAt: person.sort };

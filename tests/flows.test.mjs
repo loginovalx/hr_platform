@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +9,7 @@ import { openServer } from "../scripts/server.mjs";
 
 async function fixture(t, seed = "0", options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "kadry-test-"));
-  const server = await openServer({ port:0, seed, directory, adminPassword:"test-admin-password", hrPassword:"test-hr-password", ...options });
+  const server = await openServer({ port:0, seed, directory, adminPassword:"test-admin-password", hrPassword:"test-hr-password", gigachat:{key:""}, ...options });
   t.after(async () => { await server.close(); await rm(directory,{recursive:true,force:true}); });
   const client = () => {
     const jar = new Map();
@@ -42,8 +44,54 @@ async function publish(hr, body = draft) {
 const stage = (hr,id,action,expectedVersion,expected=200,key) => hr("/hr/applications/"+id+"/transitions",post({action,expectedVersion},expected,key));
 const today = () => new Date().toISOString().slice(0,10);
 
+async function settledAssessment(hr, path) {
+  const deadline = Date.now() + 5000;
+  do {
+    const evaluation = await hr(path + "/assessment");
+    if (evaluation.assessmentStatus !== "pending") return evaluation;
+    await delay(20);
+  } while (Date.now() < deadline);
+  assert.fail("Assessment did not finish");
+}
+const gigaReply = content => Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] });
+const gigaAuth = () => Response.json({ access_token: "test-token", expires_at: Date.now() + 600000 });
+function fixtureAnalysis({ vacancy, sources }) {
+  return {
+    summary: "В резюме указан опыт подготовки отчётов. Часть требований нужно уточнить.",
+    criteria: vacancy.criteria.map(criterion => {
+      const term = ["SQL", "Python", "Excel"].find(text => criterion.requirement.includes(text));
+      const source = term && sources.find(source => source.text.includes(term));
+      return { key: criterion.key, status: source ? "matched" : "needs_clarification",
+        quote: source ? { source: source.key, text: term } : null };
+    })
+  };
+}
+const model = { key: "test-assessment-key", fetch: async (url, init) => {
+  if (url.endsWith("/oauth")) return gigaAuth();
+  return gigaReply(fixtureAnalysis(JSON.parse(JSON.parse(init.body).messages[1].content)));
+} };
+
+function textPdf(text) {
+  const stream = `BT /F1 12 Tf 30 760 Td (${text}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
+  ];
+  let file = "%PDF-1.4\n";
+  const offsets = objects.map((obj, index) => {
+    const offset = file.length;
+    file += `${index + 1} 0 obj\n${obj}\nendobj\n`;
+    return offset;
+  });
+  return file + `xref\n0 6\n0000000000 65535 f \n${offsets.map(n => String(n).padStart(10, "0") + " 00000 n \n").join("")}`
+    + `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${file.length}\n%%EOF\n`;
+}
+
 test("intake triage explains each queue, applies filters before pagination and never rejects", async t => {
-  const {hr}=await fixture(t);
+  const {hr}=await fixture(t,"0",{gigachat:model});
   const vacancy=await publish(hr,{...draft,testQuestions:[],criteria:[
     {id:"sql",label:"Работа с SQL",code:"sql"},
     {id:"python",label:"Работа с Python",code:"python"},
@@ -51,7 +99,7 @@ test("intake triage explains each queue, applies filters before pagination and n
   ]});
   const add=async (fullName,resumeText,contact="candidate@example.test")=>{
     const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName,resumeText,contact,sourceChannel:"email"},201));
-    await hr("/hr/applications/"+app.applicationId+"/assessment");
+    await settledAssessment(hr,"/hr/applications/"+app.applicationId);
     return app.applicationId;
   };
   const ready=await add("Первый Соискатель","Писал SQL и автоматизировал отчёты в Python.");
@@ -78,32 +126,72 @@ test("intake triage explains each queue, applies filters before pagination and n
   await hr("/hr/applications/"+gap+"/transitions",post({action:"reject",expectedVersion:0,reason:"Подтверждённое расхождение."}));
   assert.equal((await hr("/hr/applications/"+gap)).triage.status,"closed");
   const archive=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Архивный Соискатель",resumeText:"Писал SQL и Python.",sourceChannel:"archive"},201));
+  await settledAssessment(hr,"/hr/applications/"+archive.applicationId);
   assert.equal((await hr("/hr/applications/"+archive.applicationId)).triage.status,"review_first");
   const noRubric=await publish(hr,{...draft,slug:"no-rubric",criteria:[],testQuestions:[]});
   const unscored=await hr("/hr/applications",post({vacancyId:noRubric.vacancyId,fullName:"Новый Соискатель",resumeText:"Готовил рабочие отчёты.",contact:"candidate@example.test"},201));
+  await settledAssessment(hr,"/hr/applications/"+unscored.applicationId);
   assert.deepEqual((await hr("/hr/applications/"+unscored.applicationId)).triage,{status:"manual_review",reason:"no_required_criteria"});
 });
 
-test("local evidence distinguishes a professional term from a substring or unrelated negation", async t => {
-  const {hr}=await fixture(t);
-  const vacancy=await publish(hr,{...draft,criteria:[
-    {id:"sql",label:"SQL",code:"sql"},
-    {id:"project_req",label:"Проектная работа",code:"project"},
-    {id:"education",label:"Профильное юридическое образование",code:"education",keywords:["юриспруденция"]}
-  ]});
-  const a=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Учебный Кандидат",resumeText:"Не использовал Python, но писал SQL. Настроил проектор. Университет, бакалавр физики."},201));
-  const items=(await hr("/hr/applications/"+a.applicationId+"/assessment")).items;
-  assert.deepEqual(items.map(item=>[item.criterionId,item.status]),[
-    ["sql","matched"],["project_req","needs_clarification"],["education","needs_clarification"]
-  ]);
-  assert.equal(items[0].evidence[0].quote,"писал SQL");
-  const other=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Другой Кандидат",resumeText:"Готов работать."},201));
-  const ranked="/hr/applications?vacancyId="+vacancy.vacancyId+"&priority=on&limit=1";
-  const first=await hr(ranked);
-  assert.equal(first.items[0].applicationId,a.applicationId);
-  assert.deepEqual(first.items[0].reviewProgress,{required:3,withEvidence:1,confirmed:0});
-  const second=await hr(ranked+"&cursor="+encodeURIComponent(first.nextCursor));
-  assert.equal(second.items[0].applicationId,other.applicationId);
+test("GigaChat analyzes a PDF against the published vacancy and grounds matches in quotes", { skip: Boolean(spawnSync("pdftotext", ["-v"]).error) }, async t => {
+  const resume = "Built datasets with multi-table joins and grouped aggregates.";
+  let completions = 0;
+  let available = true;
+  const errors = [];
+  const {hr,client}=await fixture(t,"0",{gigachat:{ key:"pdf-analysis-key",scope:"GIGACHAT_API_PERS",fetch:async (url,init) => {
+    if (url.endsWith("/oauth")) {
+      assert.equal(init.body.get("scope"),"GIGACHAT_API_PERS");
+      return gigaAuth();
+    }
+    completions++;
+    try {
+      assert.equal(url,"https://api.giga.chat/v1/chat/completions");
+      const request=JSON.parse(init.body);
+      const {vacancy,sources}=JSON.parse(request.messages[1].content);
+      assert.equal(vacancy.description,draft.description);
+      assert.deepEqual(vacancy.criteria.map(item=>item.requirement),["Знание SQL","Знание Python"]);
+      assert.match(sources[0].text,new RegExp(resume.slice(0,-1)));
+      assert.doesNotMatch(sources[0].text,/SQL|Python|Private Applicant|secret@example.test/);
+      assert.doesNotMatch(request.messages[1].content,/req_sql|req_python/);
+    } catch (error) {
+      errors.push(error);
+    }
+    if(!available)return Response.json({},{status:503});
+    return gigaReply({summary:"Кандидат строил наборы данных из нескольких таблиц. Опыт работы с Python не подтверждён.",criteria:[
+      {key:"c1",status:"matched",comment:"Описана работа с объединениями и агрегациями.",quote:{source:"s1",text:resume}},
+      {key:"c2",status:"matched",comment:"Придуманное основание.",quote:{source:"s1",text:"Разрабатывал на Python"}}
+    ]});
+  }}});
+  const vacancy=await publish(hr);
+  const form=new FormData();
+  form.set("vacancyId",vacancy.vacancyId);
+  form.set("fullName","Private Applicant");
+  form.set("contact","secret@example.test");
+  form.set("resumeFile",new Blob([textPdf("Private Applicant - secret@example.test. " + resume)]),"resume.pdf");
+  const accepted=await hr("/hr/applications",post(form,201));
+  const path="/hr/applications/"+accepted.applicationId;
+  const initial=await settledAssessment(hr,path);
+  assert.deepEqual(errors,[]);
+  assert.equal(initial.provider,"gigachat");
+  assert.match(initial.summary,/строил наборы данных/);
+  assert.deepEqual(initial.items.map(item=>item.status),["matched","needs_clarification"]);
+  assert.equal(initial.items[0].evidence[0].quote,resume);
+  assert.equal(initial.items[1].comment,null);
+  assert.equal((await hr(path)).resumeSource.extractStatus,"extracted");
+  assert.equal(completions,1);
+  await client()(path+"/assessment",post({},401));
+  available=false;
+  await hr(path+"/assessment",post({},202));
+  const failed=await settledAssessment(hr,path);
+  assert.equal(failed.assessmentStatus,"failed");
+  assert.equal(failed.issue,"gigachat_unavailable");
+  assert.equal(failed.summary,initial.summary);
+  available=true;
+  await hr(path+"/assessment",post({},202));
+  assert.equal((await settledAssessment(hr,path)).assessmentStatus,"ready");
+  assert.equal(completions,3);
+  assert.deepEqual(errors,[]);
 });
 
 test("interview draft is HR-only and sends only structured facts to YandexGPT", async t => {
@@ -145,9 +233,9 @@ test("interview draft is HR-only and sends only structured facts to YandexGPT", 
   assert.equal(calls,2);
 });
 
-test("GigaChat uses one bounded completion for repeated requests and keeps applicant content local", async t => {
+test("GigaChat caches interview drafts and sends no identifying fields", async t => {
   const calls=[];
-  const {hr}=await fixture(t,"0",{gigachat:{key:"test-giga",fetch:async (url,init)=>{
+  const {hr}=await fixture(t,"0",{gigachat:{key:"test-giga",scope:"GIGACHAT_API_B2B",fetch:async (url,init)=>{
     calls.push(url);
     if (url.endsWith("/oauth")) {
       assert.equal(init.headers.Authorization,"Basic test-giga");
@@ -155,40 +243,58 @@ test("GigaChat uses one bounded completion for repeated requests and keeps appli
       return Response.json({access_token:"test-token",expires_at:Date.now()+600000});
     }
     assert.equal(init.headers.Authorization,"Bearer test-token");
-    assert.equal(JSON.parse(init.body).max_tokens,160);
+    const request = JSON.parse(init.body);
     assert.doesNotMatch(init.body,/Частный текст|sample@example.test/);
+    const facts = JSON.parse(request.messages[1].content);
+    if (!Array.isArray(facts)) return gigaReply(fixtureAnalysis(facts));
+    assert.equal(request.max_tokens,160);
     return Response.json({choices:[{message:{content:'{"questions":[{"criterionKey":"c1","question":"Как вы проверяли запросы?"}]}'}}]});
   }}});
   const vacancy=await publish(hr);
   const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Частный текст",contact:"sample@example.test",resumeText:"SQL. Частный текст."},201));
   const path="/hr/applications/"+app.applicationId;
-  await hr(path+"/assessment");
+  await settledAssessment(hr,path);
   const first=await hr(path+"/interview-draft",post({}));
   assert.equal(first.source,"gigachat");
   assert.deepEqual(await hr(path+"/interview-draft",post({})),first);
-  assert.equal(calls.length,2);
+  assert.equal(calls.length,3);
 });
 
-test("guest application, versioned test, linked candidate, all hiring stages and two independent surveys", async t=>{
-  const {client,hr}=await fixture(t);
+test("guest application without a test, automatic profile, hiring and two independent surveys", async t=>{
+  const {client,hr}=await fixture(t,"0",{gigachat:model});
   const guest=client();
   const outsider=client();
   await outsider("/hr/applications",{expected:401});
   const vacancy=await publish(hr);
   await guest("/public/session");
   const publicV=await guest("/public/vacancies/analyst");
-  const payload={vacancyId:vacancy.vacancyId,publishedVersionId:publicV.publishedVersionId,testVersionId:publicV.testVersionId,fullName:"Мария Соколова",contact:"first@example.com",resumeText:"Писала SQL-запросы для отчётности."};
-  await guest("/public/applications",post(payload,422));
+  const payload={vacancyId:vacancy.vacancyId,publishedVersionId:publicV.publishedVersionId,fullName:"Мария Соколова",contact:"first@example.com",resumeText:"Писала SQL-запросы для отчётности."};
+  assert.deepEqual(publicV.questions,[]);
+  assert.equal(publicV.testVersionId,null);
+  await guest("/public/applications",post({...payload,resumeText:""},422));
+  const combined=new FormData();
+  for(const [k,v] of Object.entries(payload))combined.set(k,v);
+  combined.set("resumeFile",new Blob(["SQL"]),"resume.txt");
+  assert.equal((await guest("/public/applications",post(combined,422))).fields[0].code,"one_resume_source");
   const key=crypto.randomUUID();
-  payload.answers=[{questionId:"project",value:"Собрала отчёт"},{questionId:"quality",value:"Сверяла агрегаты"}];
   const a=await guest("/public/applications",post(payload,201,key));
   assert.equal((await guest("/public/applications",post(payload,201,key))).applicationId,a.applicationId);
   await guest("/public/applications",post({...payload,fullName:"Другое имя"},409,key));
   await outsider("/public/receipts/"+a.receiptNumber,{expected:403});
   const receipt=await guest("/public/receipts/"+a.receiptNumber);
-  assert.equal(receipt.assessmentStatus,"ready");
-  const thread=await guest("/public/clarifications/"+receipt.clarificationThreadId);
-  assert.equal((await hr("/hr/applications/"+a.applicationId)).triage.status,"clarify");
+  assert.ok(["pending","ready"].includes(receipt.assessmentStatus));
+  await settledAssessment(hr,"/hr/applications/"+a.applicationId);
+  assert.equal(receipt.clarificationThreadId,null);
+  const initial=await hr("/hr/applications/"+a.applicationId);
+  assert.equal(initial.triage.status,"clarify");
+  assert.equal(initial.testStatus,"not_required");
+  assert.ok(initial.candidateId);
+  assert.deepEqual((await hr("/hr/candidates/"+initial.candidateId)).applicationIds,[a.applicationId]);
+  await guest("/public/clarifications/"+initial.clarificationThreadId,{expected:403});
+  const invitation=await hr("/hr/clarifications/"+initial.clarificationThreadId+"/links",post({contactVerified:true},201));
+  const token=new URL(invitation.link).pathname.split("/").at(-1);
+  const access=await guest("/public/clarification-sessions",post({token},201));
+  const thread=await guest("/public/clarifications/"+access.threadId);
   assert.equal(thread.questions.length,1);
   assert.match(thread.questions[0].text,/Python/);
   const answer=[{questionId:thread.questions[0].questionId,text:"В проекте использовала Python и Pandas."}];
@@ -197,7 +303,7 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   await guest("/public/clarifications/"+thread.threadId+"/answers",post({answers:answer},202,qaKey));
   await guest("/public/clarifications/"+thread.threadId+"/answers",post({answers:answer},409));
   const appUrl="/hr/applications/"+a.applicationId;
-  const score=await hr(appUrl+"/assessment");
+  const score=await settledAssessment(hr,appUrl);
   assert.equal(score.items[0].status,"matched");
   assert.match(score.items[0].evidence[0].quote,/SQL/);
   assert.equal(score.items[1].status,"matched");
@@ -210,14 +316,14 @@ test("guest application, versioned test, linked candidate, all hiring stages and
 
   const changed={...draft,testQuestions:[{id:"project",text:"Новая формулировка",required:true}]};
   await hr("/hr/vacancies/"+vacancy.vacancyId+"/draft",{method:"PUT",body:changed});
-  assert.equal((await guest("/public/vacancies/analyst")).questions[0].text,"Опишите проект");
+  assert.deepEqual((await guest("/public/vacancies/analyst")).questions,[]);
   await hr("/hr/vacancies/"+vacancy.vacancyId+"/publish",post({},201));
   assert.equal((await guest("/public/applications",post(payload,409))).code,"vacancy_version_changed");
-  assert.equal((await hr(appUrl)).answers[0].question,"Опишите проект");
+  assert.deepEqual((await hr(appUrl)).answers,[]);
 
   const candidate=await hr("/hr/candidates",post({fullName:"Мария Соколова",contact:"first@example.com",education:"Филология",additionalEducation:"Юриспруденция"},201));
   await hr("/hr/candidates",post({fullName:"Мария Соколова",contact:"second@example.com",education:"Второй профиль"},201));
-  assert.equal((await hr("/hr/candidates?q="+encodeURIComponent("Соколова"))).items.length,2);
+  assert.equal((await hr("/hr/candidates?q="+encodeURIComponent("Соколова"))).items.length,3);
   const retrained=await hr("/hr/candidates?additionalEducation="+encodeURIComponent("ЮРИСПРУДЕНЦИЯ"));
   assert.deepEqual(retrained.items.map(x=>x.candidateId),[candidate.candidateId]);
   assert.equal((await hr("/hr/candidates/"+candidate.candidateId)).additionalEducation,"Юриспруденция");
@@ -243,9 +349,6 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   await outsider(interviewUrl+"/responses",post({answers:[{questionId:"clarity",value:5}]},410));
   await outsider(interviewUrl,{expected:410});
   await stage(hr,a.applicationId,"move_to_decision",3);
-  await stage(hr,a.applicationId,"hire",4,409);
-  await hr(appUrl+"/candidate",{method:"PUT",body:{candidateId:candidate.candidateId}});
-  assert.deepEqual((await hr("/hr/candidates/"+candidate.candidateId)).applicationIds,[a.applicationId]);
   const hire=await stage(hr,a.applicationId,"hire",4);
   const employmentUrl="/hr/employments/"+hire.employmentId;
   const regular=client();
@@ -279,7 +382,7 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   assert.equal(limited.departures,undefined);
 });
 test("archive validation and pagination, attachment limits, manual clarification, rejection stage", async t=>{
-  const {client,hr}=await fixture(t);
+  const {client,hr}=await fixture(t,"0",{gigachat:model});
   const vacancy=await publish(hr);
   const pack={vacancyId:vacancy.vacancyId,items:[
     {fullName:"Иван Волков",contact:"ivan@example.com",resumeText:"Писал отчёты.",sourceReceivedAt:"2025-01-14"},
@@ -290,8 +393,9 @@ test("archive validation and pagination, attachment limits, manual clarification
   assert.equal(imported.accepted.length,2);
   assert.equal(imported.errors[0].index,1);
   const id=imported.accepted[0].applicationId;
+  await settledAssessment(hr,"/hr/applications/"+id);
   const a=await hr("/hr/applications/"+id);
-  assert.equal(a.testStatus,"not_completed");
+  assert.equal(a.testStatus,"not_required");
   assert.ok(a.importedAt);
   assert.equal(a.sourceReceivedAt,"2025-01-14T00:00:00.000Z");
   const invite=await hr("/hr/clarifications/"+a.clarificationThreadId+"/links",post({contactVerified:true},201));
@@ -327,7 +431,7 @@ test("archive validation and pagination, attachment limits, manual clarification
   await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Слишком длинный текст",resumeText:"x".repeat(20001)},422));
 });
 test("demo dashboard and guest intake use synthetic records", async t=>{
-  const {hr,client}=await fixture(t,"1",{demo:true});
+  const {hr,client,server}=await fixture(t,"1",{demo:true});
   const stats=await hr("/hr/analytics");
   assert.equal(stats.totals.received,21);
   assert.equal(stats.totals.hired,4);
@@ -335,8 +439,12 @@ test("demo dashboard and guest intake use synthetic records", async t=>{
   assert.equal((await hr("/hr/vacancies")).items.length,4);
   assert.match((await hr("/public/vacancies/hr-sector-consultant")).description,/Минимальный стаж не установлен/);
   const consultant=(await hr("/hr/applications?vacancyId=vacancy_4&priority=on")).items[0];
-  const evidence=(await hr("/hr/applications/"+consultant.applicationId+"/assessment")).items[0];
-  assert.equal(evidence.status,"partial");
+  const consultantPath="/hr/applications/"+consultant.applicationId;
+  const initial=await hr(consultantPath+"/assessment");
+  const evidence=initial.items[0];
+  assert.equal(initial.assessmentStatus,"not_analyzed");
+  assert.equal(evidence.status,"needs_clarification");
+  assert.equal(evidence.evidence.length,0);
   assert.match(evidence.reference,/2\.2\.1/);
   const matching=(await hr("/hr/candidates?skills="+encodeURIComponent("ЮРИСПРУДЕНЦИЯ справки"))).items;
   assert.equal(matching[0].candidateId,consultant.candidateId);
@@ -345,7 +453,19 @@ test("demo dashboard and guest intake use synthetic records", async t=>{
   assert.equal((await guest("/public/session")).syntheticOnly,true);
   const vacancy=await guest("/public/vacancies/hr-sector-consultant");
   const application={vacancyId:vacancy.vacancyId,publishedVersionId:vacancy.publishedVersionId,fullName:"Учебный Соискатель",contact:"candidate@example.test",resumeText:"Учебный текст."};
-  await guest("/public/applications",post(application,422));
-  await guest("/public/applications",post({...application,demoAcknowledged:true,contact:"candidate@example.com"},422));
-  await guest("/public/applications",post({...application,demoAcknowledged:true},201));
+  await guest("/public/applications",post({...application,contact:"candidate@example.com"},422));
+  await guest("/public/applications",post(application,201));
+  const fileOnly=new FormData();
+  for(const [k,v] of Object.entries(application))if(k!=="resumeText")fileOnly.set(k,v);
+  fileOnly.set("resumeFile",new Blob(["Учебное резюме"]),"resume.txt");
+  const uploaded=await guest("/public/applications",post(fileOnly,201));
+  assert.equal((await hr("/hr/applications/"+uploaded.applicationId)).resumeSource.text,"Учебное резюме");
+  const withoutKey=await settledAssessment(hr,"/hr/applications/"+uploaded.applicationId);
+  assert.equal(withoutKey.issue,"gigachat_not_configured");
+  assert.equal(withoutKey.summary,null);
+  await hr(consultantPath+"/assessment",post({},503));
+  server.env.GIGACHAT_AUTH_KEY=model.key;
+  server.env.GIGACHAT_FETCH=model.fetch;
+  await hr(consultantPath+"/assessment",post({},202));
+  assert.equal((await settledAssessment(hr,consultantPath)).provider,"gigachat");
 });

@@ -32,7 +32,7 @@ async function publicRoutes(ctx, method, p) {
     const byId = new Map(versions.map(x => [x.id, x]));
     const items = paged.items.map(v => {
       const x = byId.get(v.publishedVersionId);
-      return { vacancyId: v.id, slug: x.slug, title: x.title, department: x.department, schedule: x.schedule, location: x.location, description: x.description.slice(0, 260), hasTest: Boolean(x.testVersionId) };
+      return { vacancyId: v.id, slug: x.slug, title: x.title, department: x.department, schedule: x.schedule, location: x.location, description: x.description.slice(0, 260), hasTest: false };
     });
     return result({ items, nextCursor: paged.nextCursor });
   }
@@ -40,9 +40,8 @@ async function publicRoutes(ctx, method, p) {
   if (method === "GET" && p.length === 2 && p[0] === "receipts") {
     const r = await get(ctx, "receipt", p[1]);
     if (r.expiresAt <= isoNow() || !r.visitorId || r.visitorId !== await visitor(ctx)) denied();
-    await processPending(ctx, r.applicationId);
     const app = await get(ctx, "application", r.applicationId);
-    return result({ receiptNumber: r.id, assessmentStatus: app.assessmentStatus, clarificationThreadId: app.clarificationThreadId });
+    return result({ receiptNumber: r.id, assessmentStatus: app.assessmentStatus, clarificationThreadId: null });
   }
   if (p[0] === "surveys" && ((method === "GET" && p.length === 2) || (method === "POST" && p.length === 3 && p[2] === "responses"))) return publicSurvey(ctx, p[1]);
   if (p[0] === "clarifications" && ((method === "GET" && p.length === 2) || (method === "POST" && p.length === 3 && p[2] === "answers"))) return publicClarification(ctx, p[1]);
@@ -64,10 +63,10 @@ async function hrApplications(ctx, method, p) {
     if (stageOrder.includes(stage)) { conditions.push("json_extract(data,'$.stage.currentStage')=? AND json_extract(data,'$.stage.outcome') IS NULL"); params.push(stage); }
     if (["hired","rejected"].includes(stage)) { conditions.push("json_extract(data,'$.stage.outcome')=?"); params.push(stage); }
     if (channel && channels.has(channel)) { conditions.push("json_extract(data,'$.sourceChannel')=?"); params.push(channel); }
-    return result(await applicationQueue(ctx, conditions, params, Boolean(vacancyId && ctx.url.searchParams.get("priority") === "on")));
+    return result(await applicationQueue(ctx, conditions, params));
   }
-  if (method === "GET") await processPending(ctx, p[1]);
   const app = await get(ctx, "application", p[1]);
+  if (method === "GET" && app.assessmentStatus === "pending") ctx.execution.waitUntil(processPending(ctx, app.id).catch(console.error));
   if (method === "GET" && p.length === 2) {
     const [source, triage] = await Promise.all([get(ctx, "source", app.sourceId, false), getTriage(ctx, app.id)]);
     return result({ ...appView(app, source || { id: app.sourceId, type: "resume", text: "" }), triage });
@@ -75,6 +74,7 @@ async function hrApplications(ctx, method, p) {
   if (method === "PUT" && p.length === 3 && p[2] === "candidate") return linkCandidate(ctx, app);
   if (p[2] === "assessment") {
     if (method === "GET" && p.length === 3) return result(await assessView(ctx, app));
+    if (method === "POST" && p.length === 3) return requestAssessment(ctx, app);
     if (method === "PATCH" && p.length === 4) return overrideAssessment(ctx, app, p[3]);
   }
   if (p[2] === "interview-draft" && p.length === 3 && method === "POST") return interviewDraft(ctx, app);

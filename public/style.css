@@ -218,6 +218,7 @@ sub,sup{line-height:0}
 .metadata div{display:grid;gap:3px}
 .metadata dt{font-size:.77rem;color:#737b91}
 .metadata dd{font-size:.9rem;line-height:1.38;overflow-wrap:anywhere}
+.criterion h4{margin:0;overflow-wrap:anywhere}
 .criterion{border:1px solid #e8e9f3;border-radius:11px;background:#fff;padding:13px;display:grid;gap:9px;min-width:0}
 .quote{border-left:3px solid #b9aaf4;border-radius:0 7px 7px 0;padding:8px 10px;background:#f7f5ff;color:#565171;font-size:.845rem;line-height:1.52;white-space:pre-wrap;overflow-wrap:anywhere}
 .attachment{border:1px solid var(--line);border-radius:10px;padding:10px;min-width:0}
@@ -311,3 +312,6 @@ body:has(dialog[open]){overflow:hidden}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation-duration:.01ms!important}
 }
+
+.resume-fields { margin: 0; }
+.resume-fields legend { padding: 0 4px; }
