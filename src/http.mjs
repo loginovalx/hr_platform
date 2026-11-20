@@ -49,26 +49,6 @@ async function publicRoutes(ctx, method, p) {
   if (method === "POST" && p.join("/") === "clarification-sessions") return exchangeClarification(ctx);
   missing();
 }
-async function prioritizedApplications(ctx, conditions, params) {
-  const { limit, after } = pageOptions(ctx.url);
-  const cursor = after ? `WHERE (priority, sort) < (coalesce((SELECT priority FROM ranked WHERE id=?),0), ?)
-    OR (priority=coalesce((SELECT priority FROM ranked WHERE id=?),0) AND sort=? AND id>?)` : "";
-  const anchor = after ? [after.id, after.sort, after.id, after.sort, after.id] : [];
-  const found = await rows(ctx, `WITH filtered AS (
-    SELECT * FROM records WHERE kind='application' AND ${conditions.join(" AND ")}
-  ), ranked AS (
-    SELECT f.*, coalesce((
-      SELECT sum(CASE WHEN json_extract(c.value,'$.hrOverride.status')='matched' THEN 9
-        WHEN json_extract(c.value,'$.hrOverride') IS NULL AND json_extract(c.value,'$.status') IN ('matched','partial') AND json_array_length(json_extract(c.value,'$.evidence'))>0 THEN 1
-        ELSE 0 END)
-      FROM json_each(assessment.data,'$.items') c WHERE json_extract(c.value,'$.required')=1
-    ),0) AS priority
-    FROM filtered f LEFT JOIN records assessment ON assessment.kind='assessment' AND assessment.id=f.id
-  ) SELECT * FROM ranked ${cursor} ORDER BY priority DESC, sort DESC, id LIMIT ?`, ...params, ...anchor, limit + 1);
-  const items = found.slice(0, limit);
-  const last = items.at(-1);
-  return { items, nextCursor: found.length > limit ? `${last.sort}~${last.id}` : null };
-}
 async function hrApplications(ctx, method, p) {
   if (p.length === 1) {
     if (method === "POST") return receive(ctx, false);
@@ -84,24 +64,14 @@ async function hrApplications(ctx, method, p) {
     if (stageOrder.includes(stage)) { conditions.push("json_extract(data,'$.stage.currentStage')=? AND json_extract(data,'$.stage.outcome') IS NULL"); params.push(stage); }
     if (["hired","rejected"].includes(stage)) { conditions.push("json_extract(data,'$.stage.outcome')=?"); params.push(stage); }
     if (channel && channels.has(channel)) { conditions.push("json_extract(data,'$.sourceChannel')=?"); params.push(channel); }
-    const found = vacancyId && ctx.url.searchParams.get("priority") === "on"
-      ? await prioritizedApplications(ctx, conditions, params) : await page(ctx, "application", conditions, params);
-    const ids = found.items.map(item => item.id);
-    const assessments = ids.length ? await rows(ctx,
-      `SELECT * FROM records WHERE kind='assessment' AND id IN (${ids.map(() => "?").join(",")})`, ...ids) : [];
-    const byId = new Map(assessments.map(item => [item.id, item]));
-    return result({ ...found, items: found.items.map(item => {
-      const required = byId.get(item.id)?.items.filter(criterion => criterion.required);
-      return { ...applicationSummary(item), reviewProgress: required?.length ? {
-        required: required.length,
-        withEvidence: required.filter(criterion => criterion.evidence.length).length,
-        confirmed: required.filter(criterion => criterion.hrOverride?.status === "matched").length
-      } : null };
-    }) });
+    return result(await applicationQueue(ctx, conditions, params, Boolean(vacancyId && ctx.url.searchParams.get("priority") === "on")));
   }
   if (method === "GET") await processPending(ctx, p[1]);
   const app = await get(ctx, "application", p[1]);
-  if (method === "GET" && p.length === 2) return result(appView(app, await get(ctx, "source", app.sourceId)));
+  if (method === "GET" && p.length === 2) {
+    const [source, triage] = await Promise.all([get(ctx, "source", app.sourceId, false), getTriage(ctx, app.id)]);
+    return result({ ...appView(app, source || { id: app.sourceId, type: "resume", text: "" }), triage });
+  }
   if (method === "PUT" && p.length === 3 && p[2] === "candidate") return linkCandidate(ctx, app);
   if (p[2] === "assessment") {
     if (method === "GET" && p.length === 3) return result(await assessView(ctx, app));

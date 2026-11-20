@@ -42,6 +42,48 @@ async function publish(hr, body = draft) {
 const stage = (hr,id,action,expectedVersion,expected=200,key) => hr("/hr/applications/"+id+"/transitions",post({action,expectedVersion},expected,key));
 const today = () => new Date().toISOString().slice(0,10);
 
+test("intake triage explains each queue, applies filters before pagination and never rejects", async t => {
+  const {hr}=await fixture(t);
+  const vacancy=await publish(hr,{...draft,testQuestions:[],criteria:[
+    {id:"sql",label:"Работа с SQL",code:"sql"},
+    {id:"python",label:"Работа с Python",code:"python"},
+    {id:"optional",label:"Офисные инструменты",code:"office",required:false}
+  ]});
+  const add=async (fullName,resumeText,contact="candidate@example.test")=>{
+    const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName,resumeText,contact,sourceChannel:"email"},201));
+    await hr("/hr/applications/"+app.applicationId+"/assessment");
+    return app.applicationId;
+  };
+  const ready=await add("Первый Соискатель","Писал SQL и автоматизировал отчёты в Python.");
+  const clarify=await add("Второй Соискатель","Писал только SQL.");
+  const source=await add("Третий Соискатель","Писал SQL и Python.","");
+  const unreadable=await add("Соискатель Без Текста","https://example.test/cv");
+  const gap=await add("Четвёртый Соискатель","Писал SQL и Python.");
+  await hr("/hr/applications/"+gap+"/assessment/python",{method:"PATCH",body:{status:"not_met",reason:"Критерий сверил кадровик."}});
+  const list="/hr/applications?vacancyId="+vacancy.vacancyId;
+  const all=await hr(list);
+  assert.deepEqual(Object.fromEntries(all.items.map(x=>[x.applicationId,x.triage.status])),{
+    [ready]:"review_first",[clarify]:"clarify",[source]:"check_source",[unreadable]:"check_source",[gap]:"confirmed_gap"
+  });
+  assert.deepEqual(all.items.find(x=>x.applicationId===source).triage,{status:"check_source",reason:"missing_contact"});
+  assert.equal(all.items.find(x=>x.applicationId===unreadable).triage.reason,"missing_text");
+  assert.equal((await hr(list+"&triage=clarify&limit=1")).items[0].applicationId,clarify);
+  assert.equal((await hr(list+"&triage=clarify&limit=1")).triageTotals.review_first,1);
+  assert.equal(all.items.every(item=>item.outcome===null),true);
+  assert.equal((await hr("/hr/applications/"+gap)).triage.reason,"hr_confirmed_gap");
+  const empty=await hr(list+"&triage=closed");
+  assert.deepEqual(empty.items,[]);
+  assert.equal(empty.triageTotals.check_source,2);
+  await hr(list+"&triage=unknown",{expected:422});
+  await hr("/hr/applications/"+gap+"/transitions",post({action:"reject",expectedVersion:0,reason:"Подтверждённое расхождение."}));
+  assert.equal((await hr("/hr/applications/"+gap)).triage.status,"closed");
+  const archive=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,fullName:"Архивный Соискатель",resumeText:"Писал SQL и Python.",sourceChannel:"archive"},201));
+  assert.equal((await hr("/hr/applications/"+archive.applicationId)).triage.status,"review_first");
+  const noRubric=await publish(hr,{...draft,slug:"no-rubric",criteria:[],testQuestions:[]});
+  const unscored=await hr("/hr/applications",post({vacancyId:noRubric.vacancyId,fullName:"Новый Соискатель",resumeText:"Готовил рабочие отчёты.",contact:"candidate@example.test"},201));
+  assert.deepEqual((await hr("/hr/applications/"+unscored.applicationId)).triage,{status:"manual_review",reason:"no_required_criteria"});
+});
+
 test("local evidence distinguishes a professional term from a substring or unrelated negation", async t => {
   const {hr}=await fixture(t);
   const vacancy=await publish(hr,{...draft,criteria:[
@@ -146,6 +188,7 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   const receipt=await guest("/public/receipts/"+a.receiptNumber);
   assert.equal(receipt.assessmentStatus,"ready");
   const thread=await guest("/public/clarifications/"+receipt.clarificationThreadId);
+  assert.equal((await hr("/hr/applications/"+a.applicationId)).triage.status,"clarify");
   assert.equal(thread.questions.length,1);
   assert.match(thread.questions[0].text,/Python/);
   const answer=[{questionId:thread.questions[0].questionId,text:"В проекте использовала Python и Pandas."}];
@@ -159,9 +202,11 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   assert.match(score.items[0].evidence[0].quote,/SQL/);
   assert.equal(score.items[1].status,"matched");
   assert.equal(score.items[1].evidence[0].type,"clarification");
+  assert.equal((await hr(appUrl)).triage.status,"review_first");
   const override=await hr(appUrl+"/assessment/req_python",{method:"PATCH",body:{status:"partial",reason:"Есть только учебный проект."}});
   assert.equal(override.items[1].status,"matched");
   assert.equal(override.items[1].hrOverride.status,"partial");
+  assert.equal((await hr(appUrl)).triage.status,"clarify");
 
   const changed={...draft,testQuestions:[{id:"project",text:"Новая формулировка",required:true}]};
   await hr("/hr/vacancies/"+vacancy.vacancyId+"/draft",{method:"PUT",body:changed});

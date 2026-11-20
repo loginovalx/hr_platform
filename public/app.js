@@ -223,6 +223,33 @@ function funnelChart(rows, total) {
   return `<div class="funnel-list">${rows.map(x => `<div class="funnel-${x.stage}"><div class="funnel-head"><span>${esc(stages[x.stage][0])}</span><b>${number(x.reached)}</b></div>
   <div class="funnel-track" role="meter" aria-label="${esc(stages[x.stage][0])}" aria-valuemin="0" aria-valuemax="${Math.max(1,total)}" aria-valuenow="${x.reached}"><span style="--progress:${total ? x.reached / total * 100 : 0}%"></span></div></div>`).join("")}</div>`;
 }
+const intakeStatuses = {
+  review_first: ["Рассмотреть в первую очередь", "green"],
+  clarify: ["Нужно уточнение", "amber"],
+  check_source: ["Проверить данные", "amber"],
+  confirmed_gap: ["Расхождение подтверждено HR", "purple"],
+  manual_review: ["Ручной разбор", ""],
+  processing: ["Идёт разбор", ""],
+  closed: ["Завершён", ""]
+};
+const intakeReasons = {
+  finished: "Этап подбора завершён.",
+  hr_confirmed_gap: "Кадровик отметил несоответствие по обязательному требованию.",
+  missing_source: "Источник отклика недоступен.",
+  unreadable_attachment: "В файле нет текста для разбора. Откройте вложение или запросите текст.",
+  missing_text: "Нет читаемого текста резюме или ответов на тест.",
+  missing_contact: "В отклике и профиле нет email для связи.",
+  analysis_pending: "Проверяем требования по материалам отклика.",
+  analysis_unavailable: "Автоматический разбор не готов. Проверьте материалы вручную.",
+  no_required_criteria: "У вакансии нет обязательных критериев. Просмотрите отклик вручную.",
+  required_supported: "По каждому обязательному требованию есть цитата или подтверждение кадровика.",
+  required_need_evidence: "По части обязательных требований нужны дополнительные сведения.",
+  test_incomplete: "В обязательных вопросах теста есть пропуски."
+};
+function intakeStatus(triage) {
+  const status = intakeStatuses[triage?.status];
+  return status ? chip(status[0],status[1],true) : "";
+}
 function applicationTable(items, compact = false) {
   const headers = compact
     ? [["Кандидат",29],["Вакансия",31],["Этап",23],["Получен",17]]
@@ -231,7 +258,8 @@ function applicationTable(items, compact = false) {
     const url = `/hr/applications/${enc(x.applicationId)}`;
     const person = `<div class="person-ct">${avatar(x.fullName,i)}<div><a data-link class="table-name" href="${url}">${esc(x.fullName)}</a>${!compact && x.contact ? `<span class="table-meta">${esc(x.contact)}</span>` : ""}</div></div>`;
     const progress = !compact && x.reviewProgress;
-    const stage = stagePill(x) + (progress ? `<small class="table-meta">Цитаты ${progress.withEvidence}/${progress.required} · Подтверждено HR ${progress.confirmed}/${progress.required}</small>` : "");
+    const stage = stagePill(x) + (!compact && x.triage ? `<div class="table-meta">${intakeStatus(x.triage)}<small class="table-meta">${esc(intakeReasons[x.triage.reason])}</small></div>` : "")
+      + (progress ? `<small class="table-meta">Цитаты ${progress.withEvidence}/${progress.required} · Подтверждено HR ${progress.confirmed}/${progress.required}</small>` : "");
     return { href:url,cells:[person,esc(x.vacancyTitle),stage,...(!compact ? [`<span class="muted">${esc(sourceNames[x.sourceChannel])}</span>`] : []),`<span class="muted">${esc(date(x.receivedAt))}</span>`] };
   });
   return items.length ? table(headers,rows) : empty("Откликов пока нет","Когда соискатель заполнит форму, отклик появится здесь.");
@@ -338,12 +366,16 @@ async function editVacancyPage(id) {
 async function applicationList() {
   const q=new URLSearchParams(location.search);
   const [r,menu]=await Promise.all([getJSON("/hr/applications"+location.search),vacancyMenu(q.get("vacancyId"))]);
+  const totals=r.triageTotals;
+  const queues=[["",`Вся очередь (${Object.values(totals).reduce((a,b)=>a+b,0)})`],
+    ...Object.entries(intakeStatuses).map(([key,[label]])=>[key,`${label} (${totals[key]||0})`])];
   return `${heading("Отклики","Новые заявки, резюме и этапы подбора.",btn("Импорт архива",'data-action="import-archive"',"secondary","upload")+btn("Добавить отклик",'data-action="import-application"',"primary","plus"))}
   <form class="card pad filters" data-form="app-filters">
     ${searchField(q.get("q"),"Поиск по кандидату")}
     ${vacancySelect(menu,q.get("vacancyId"))}
     ${selectField("stage","Этап", [["","Все этапы"],...Object.entries(stages).map(([id,[text]])=>[id,text])],q.get("stage"))}
     ${selectField("channel","Источник",[["","Все источники"],...Object.entries(sourceNames)],q.get("channel"))}
+    ${selectField("triage","Очередь разбора",queues,q.get("triage"))}
     ${check("priority","По приоритету проверки выбранной вакансии",q.get("priority")==="on")}
     <div class="row wrap">${submit("Применить","funnel")}${link("/hr/applications","Сбросить","quiet")}</div>
   </form>
@@ -448,6 +480,7 @@ async function applicationDetail(id) {
   <div class="details-grid"><section class="card pad stack"><nav class="tabs" aria-label="Материалы отклика">${tabs.map(([key,label])=>`<a data-link href="${esc(pagePath(url,{tab:key==="assessment"?"":key}))}" ${key===active?'aria-current="page"':""}>${esc(label)}</a>`).join("")}</nav>${detail}</section>
   <aside class="stack">
     <section class="card pad stack-sm"><h2>Этап подбора</h2><div>${stagePill(a)}</div>
+    ${a.triage && a.triage.status!=="closed" ? `<div class="note stack-sm">${intakeStatus(a.triage)}<p>${esc(intakeReasons[a.triage.reason])}</p></div>` : ""}
     <div class="stage-progress" aria-hidden="true">${Array.from({length:4},(_,i)=>`<i class="${i<=activeIndex?"filled":""}"></i>`).join("")}</div>
     ${a.stage.transitions.length?`<div class="stack-sm">${a.stage.transitions.map(action=>btn(actions[action],`data-action="transition" data-stage-action="${action}"`,action==="reject"?"danger":"primary",action==="reject"?"xCircle":"check")).join("")}</div>`:""}
     ${a.stage.currentStage==="decision"&&!a.stage.outcome&&!a.candidateId?'<p class="small muted">Чтобы оформить найм, подтвердите связь с карточкой кандидата.</p>':""}</section>

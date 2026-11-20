@@ -1637,6 +1637,8 @@ paths:
                         applicationId:
                           type: string
                           maxLength: 140
+                        triage:
+                          $ref: '#/components/schemas/IntakeTriage'
                         vacancyId:
                           type: string
                           maxLength: 140
@@ -1684,6 +1686,12 @@ paths:
                             maxLength: 140
                           - type: 'null'
                     maxItems: 50
+                  triageTotals:
+                    description: Счётчики по текущим фильтрам, до фильтра по очереди и пагинации
+                    type: object
+                    additionalProperties:
+                      type: integer
+                      minimum: 0
                   nextCursor:
                     anyOf:
                     - type: string
@@ -1734,6 +1742,10 @@ paths:
           - archive
           - manual
           - unknown
+      - name: triage
+        in: query
+        schema:
+          $ref: '#/components/schemas/IntakeTriageStatus'
     post:
       tags:
       - Отклики
@@ -1990,6 +2002,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  triage:
+                    $ref: '#/components/schemas/IntakeTriage'
                   applicationId:
                     type: string
                     maxLength: 140
@@ -3983,6 +3997,19 @@ components:
       name: kadry_guest
       description: Гостевая сессия с доступом к своему подтверждению и чату.
   schemas:
+    IntakeTriageStatus:
+      type: string
+      enum: [review_first, clarify, check_source, confirmed_gap, manual_review, processing, closed]
+    IntakeTriage:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          $ref: '#/components/schemas/IntakeTriageStatus'
+        reason:
+          type: string
+          enum: [finished, hr_confirmed_gap, missing_source, unreadable_attachment, missing_text, missing_contact,
+            analysis_pending, analysis_unavailable, no_required_criteria, required_supported, required_need_evidence, test_incomplete]
     Error:
       type: object
       properties:

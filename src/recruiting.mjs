@@ -131,6 +131,7 @@ async function receive(ctx, isPublic) {
   const { attachment } = contents;
   const source = make({
     type: "resume", text: contents.text, searchText: lowered(contents.text), extractStatus: contents.extractStatus,
+    readable: /\p{L}/u.test(contents.text.replace(/\b(?:https?:\/\/|www\.)\S+/giu, "")),
     attachment: attachment && { name: attachment.name, size: attachment.size, type: attachment.type }
   }, applicationId);
   const app = make({
