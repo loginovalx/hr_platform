@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 
 const built = new URL("../dist/", import.meta.url);
 await Promise.all([mkdir(new URL("server/", built), { recursive: true }), mkdir(new URL(".openai/", built), { recursive: true })]);
-const sources = ["core", "documents", "recruiting", "interview-draft", "hiring", "demo", "http"];
+const sources = ["core", "documents", "recruiting", "gigachat", "interview-draft", "hiring", "demo", "http"];
 const files = { "/": "index.html", "/app.js": "app.js", "/style.css": "style.css", "/mark.svg": "mark.svg" };
 const assets = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([path, filename]) => [path, await readFile(new URL(`../public/${filename}`, import.meta.url), "utf8")])));
 const source = await Promise.all(sources.map(name => readFile(new URL(`../src/${name}.mjs`, import.meta.url), "utf8")));

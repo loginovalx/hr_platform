@@ -400,6 +400,7 @@ function interviewCard(record) {
   const i=record.interview;
   return `<section class="card pad stack-sm"><h2>Интервью</h2>
   <div>${i.completedAt ? chip("Состоялось","green",true) : chip("Назначено","amber",true)}</div>
+  ${i.scheduledAt ? meta([["Назначено (МСК)",esc(date(i.scheduledAt,true))]]) : '<p class="small muted">Время интервью не указано.</p>'}
   ${i.completedAt ? (i.invitationId ? btn("Открыть анкету",`data-action="invitation" data-id="${esc(i.invitationId)}"`,"secondary","feedback") : btn("Запросить обратную связь",`data-action="interview-survey" data-id="${esc(i.interviewId)}"`,"secondary","feedback")) : ""}</section>`;
 }
 function employmentCard(e) {
@@ -431,12 +432,12 @@ async function applicationDetail(id) {
   if(active==="test") detail=`<div class="stack">${cardHead("Тест при отклике",a.testStatus==="not_completed"?"Тест не заполнен.":"Сохранённые вопросы и ответы.")}${a.answers.length?a.answers.map(x=>`<article class="criterion"><h3>${esc(x.question)}</h3><div class="small pre">${known(x.value)}</div></article>`).join(""):empty("Тест не прикреплён")}</div>`;
   if(active==="clarification") detail=`<div class="stack">${cardHead("Уточнения кандидату","Ответы хранятся вместе с источником отклика.")}${thread ? thread.questions.map(q=>`<article class="criterion"><div class="chat-bubble pre">${esc(q.text)}</div>
     ${q.answer?`<div class="chat-answer pre">${esc(q.answer)}</div>`:chip("Ожидает ответа","amber",true)}</article>`).join(""):empty("Уточнений пока нет","","chat")}
-    ${thread?.questions.some(q=>q.status==="open")&&(a.contact||person?.contact)?btn("Подготовить ссылку",`data-action="clarify-link" data-id="${enc(thread.threadId)}"`,"secondary","link"):""}</div>`;
+    ${thread?.questions.some(q=>q.status==="open")&&(a.contact||person?.contact)?btn("Подготовить ссылку для кандидата",`data-action="clarify-link" data-id="${enc(thread.threadId)}"`,"secondary","link"):""}</div>`;
   if(active==="history") detail=`<div class="stack">${cardHead("История этапов")}
     <ol class="history">${history.items.map(e=>`<li><strong class="small">${esc(actions[e.action]||stages[e.toStage]?.[0]||"Обновление")}</strong><p class="tiny muted">${esc(date(e.occurredAt,true))} · ${esc(e.actorName)}</p>
     ${e.reason?`<p class="small">${esc(e.reason)}</p>`:""}</li>`).join("")}</ol>${pagination(history.nextCursor)}</div>`;
   const activeIndex=["received","review","interview","decision"].indexOf(a.stage.currentStage);
-  return `<div class="row wrap">${link("/hr/applications","Отклики","quiet btn-sm","inbox")}
+  return `<div class="row wrap">${link("/hr/applications","Назад к откликам","secondary btn-sm")}
     ${chip(sourceNames[a.sourceChannel])}</div>
   <div class="page-head"><div class="detail-title">${avatar(a.fullName)}<div class="grow"><h1 tabindex="-1">${esc(a.fullName)}</h1><p class="muted">${esc(a.vacancyTitle)}</p></div></div>${stagePill(a)}</div>
   <div class="details-grid"><section class="card pad stack"><nav class="tabs" aria-label="Материалы отклика">${tabs.map(([key,label])=>`<a data-link href="${esc(pagePath(url,{tab:key==="assessment"?"":key}))}" ${key===active?'aria-current="page"':""}>${esc(label)}</a>`).join("")}</nav>${detail}</section>
@@ -468,7 +469,7 @@ async function candidatesView() {
 async function candidateView(id) {
   const person=await getJSON("/hr/candidates/"+enc(id)+location.search);
   const source=person.factsSource?.type==="resume"?link("/hr/applications/"+enc(person.factsSource.applicationId)+"?tab=resume","Исходное резюме","quiet btn-sm","file"):person.factsSource?.actorName?`<div class="small muted">Запись HR · ${esc(person.factsSource.actorName)} · ${esc(date(person.factsSource.at))}</div>`:"";
-  return `<div>${link("/hr/candidates","Кандидаты","quiet btn-sm","users")}</div>${heading(person.fullName,person.contact||"Email не указан")}
+  return `<div>${link("/hr/candidates","Назад к кандидатам","secondary btn-sm")}</div>${heading(person.fullName,person.contact||"Email не указан")}
   <section class="card pad stack-sm"><h2>Профиль кандидата</h2>${meta([["Образование",known(person.education)],["Доп. образование",known(person.additionalEducation)],["Опыт",known(person.experience)]])}${source}</section>
   <section class="card"><div class="table-title"><h2>История откликов</h2></div>${applicationTable(person.applications,true)}${pagination(person.nextCursor)}</section>`;
 }
@@ -490,7 +491,8 @@ async function analyticsView() {
   const [stats,menu]=await Promise.all([getJSON("/hr/analytics"+location.search),vacancyMenu(p.get("vacancyId"))]);
   const data=stats.funnel.map(x=>({ cells:[`<strong>${esc(stages[x.stage][0])}</strong>`,number(x.reached),number(x.current),number(x.rejected)]}));
   return `${heading("Аналитика найма","Этапы подбора и ответы на анкеты по выбранной вакансии и периоду.")}
-  <form class="card pad filters filters-small" data-form="analytics-filter">${vacancySelect(menu,p.get("vacancyId"))}
+  <form class="card pad filters filters-small" data-form="analytics-filter"><input type="hidden" name="separateSurveys" value="1">${vacancySelect(menu,p.get("vacancyId"))}
+  ${["surveyFrom","surveyTo"].map(name=>`<input type="hidden" name="${name}" value="${esc(p.get(name)||"")}">`).join("")}
   ${input("from","С даты",{type:"date",value:p.get("from")})}${input("to","По дату",{type:"date",value:p.get("to")})}
   <div class="row wrap">${submit("Применить","funnel")}${link("/hr/analytics","Сбросить","quiet")}</div>${errors}</form>
   ${metrics(stats.totals)}
@@ -498,20 +500,35 @@ async function analyticsView() {
   <section class="card pad">${cardHead("Воронка найма","Дошли до этапа",tile("funnel"))}${funnelChart(stats.funnel,stats.totals.received)}</section></div>
   <section class="card"><div class="table-title"><h2>Детализация по этапам</h2></div>${table([["Этап",30],["Дошли",23],["Сейчас на этапе",25],["Отказ",22]],data)}</section>
   ${stats.departures ? departureSummary(stats.departures) : ""}
-  <section class="stack-sm"><h2>Обратная связь</h2><p class="small muted">Период применяется к дате отправки анкеты.</p>${surveySummary(stats.surveys)}</section>`;
+  <section class="stack-sm"><h2>Обратная связь</h2>
+  <form class="card pad row wrap" data-form="analytics-filter">
+    ${["vacancyId","from","to"].map(name=>`<input type="hidden" name="${name}" value="${esc(p.get(name)||"")}">`).join("")}
+    <input type="hidden" name="separateSurveys" value="1">
+    ${input("surveyFrom","Анкеты отправлены с",{type:"date",value:p.get("surveyFrom")})}
+    ${input("surveyTo","Анкеты отправлены по",{type:"date",value:p.get("surveyTo")})}
+    <div class="row" style="align-self:end">${submit("Применить к анкетам","funnel")}</div>
+  </form>${surveySummary(stats.surveys)}</section>`;
 }
 async function feedbackView() {
   const p=new URLSearchParams(location.search);
   const type=p.get("type")==="exit_feedback"&&actor.role==="admin"?"exit_feedback":"interview_feedback";
-  const r=await getJSON("/hr/survey-invitations?type="+enc(type)+(p.get("cursor")?"&cursor="+enc(p.get("cursor")):""));
+  const status=p.get("status")||"";
+  const [r,analytics]=await Promise.all([
+    getJSON(pagePath("/hr/survey-invitations",{type,status,cursor:p.get("cursor"),limit:8})),
+    getJSON("/hr/analytics")
+  ]);
   const rows=r.items.map((item,i)=>({ cells:[
     `<div class="person-ct">${avatar(item.fullName,i)}<div><a class="table-name" data-link href="/hr/applications/${enc(item.applicationId)}">${esc(item.fullName)}</a><span class="table-meta">${esc(item.vacancyTitle)}</span></div></div>`,
     chip(...(invitationLabels[item.status]||invitationLabels.prepared),true),esc(date(item.sentAt)),
     btn("Открыть",`data-action="invitation" data-id="${esc(item.invitationId)}"`,"secondary btn-sm","feedback")
   ] }));
   const nav=Object.entries(typeLabels).filter(([id])=>id!=="exit_feedback"||actor.role==="admin").map(([id,label])=>`<a data-link href="/hr/feedback?type=${id}" ${type===id?'aria-current="page"':""}>${esc(label)}</a>`).join("");
-  return `${heading("Обратная связь","Приглашения, статусы отправки и ответы на анкеты.")}
-  <nav class="tabs" aria-label="Тип анкеты">${nav}</nav><section class="card">${rows.length?table([["Получатель",39],["Статус",22],["Отправлена",22],["",17]],rows):empty("Анкет пока нет","Приглашение создаётся из карточки отклика.","feedback")}${pagination(r.nextCursor)}</section>`;
+  const overview=analytics.surveys.filter(item=>item.type===type);
+  const filters=[["","Все анкеты"],["prepared","К отправке"],["sent","Ждут ответа"],["answered","С ответами"]].map(([value,label])=>link(pagePath("/hr/feedback",{type,status:value}),label,status===value?"secondary btn-sm":"quiet btn-sm")).join("");
+  return `${heading("Обратная связь","Отдельно по интервью и увольнениям.")}
+  <nav class="tabs" aria-label="Тип анкеты">${nav}</nav>${surveySummary(overview)}
+  <div class="row wrap" aria-label="Фильтр анкет">${filters}</div>
+  <section class="card">${rows.length?table([["Получатель",39],["Статус",22],["Отправлена",22],["",17]],rows):empty("Анкет в этой выборке нет","","feedback")}${pagination(r.nextCursor)}</section>`;
 }
 async function publicVacancies() {
   const r=await getJSON("/public/vacancies"+location.search);
@@ -780,6 +797,7 @@ const submitHandlers = {
   },
   async "analytics-filter"(form,f) {
     if(f.get("from")&&f.get("to")&&f.get("from")>f.get("to"))throw Object.assign(new Error("Дата окончания должна быть позже даты начала."),{fields:[{field:"to"}]});
+    if(f.get("surveyFrom")&&f.get("surveyTo")&&f.get("surveyFrom")>f.get("surveyTo"))throw Object.assign(new Error("Проверьте период отправки анкет."),{fields:[{field:"surveyTo"}]});
     await go(pagePath("/hr/analytics",Object.fromEntries(f)));
   },
   async "candidate-picker"(form,f) {
@@ -827,7 +845,8 @@ const submitHandlers = {
   },
   async transition(form,f) {
     const a=appDetailData.a;
-    await mutate(form,"transition","/hr/applications/"+enc(a.applicationId)+"/transitions","POST",{action:form.dataset.stageAction,expectedVersion:a.stage.version,reason:f.get("reason")||""});
+    const scheduled = f.get("scheduledAt");
+    await mutate(form,"transition","/hr/applications/"+enc(a.applicationId)+"/transitions","POST",{action:form.dataset.stageAction,expectedVersion:a.stage.version,reason:f.get("reason")||"",...(scheduled?{scheduledAt:scheduled+":00+03:00"}:{})});
     toast("Этап отклика обновлён.");
     await go(location.pathname+location.search);
   },
@@ -938,7 +957,7 @@ const clickActions = {
       if(!target.isConnected)return;
       target.disabled=false;
       target.focus({preventScroll:true});
-      const source=draft.source==="yandexgpt"?"Черновик подготовлен с YandexGPT. Проверьте формулировки перед интервью.":"Показаны вопросы из настроек вакансии.";
+      const source=draft.source==="local"?"Показаны вопросы из настроек вакансии.":`Черновик подготовлен с ${draft.source==="gigachat"?"GigaChat":"YandexGPT"}. Проверьте формулировки перед интервью.`;
       showDialog("Вопросы для интервью",`<div class="stack"><p class="note">${source}</p>
         ${draft.questions.map(({label,question})=>`<article class="criterion"><h3>${esc(label)}</h3><p>${esc(question)}</p></article>`).join("")}</div>`);
     } finally {
@@ -964,6 +983,7 @@ const clickActions = {
   transition(target){
     const action=target.dataset.stageAction;
     showDialog(actions[action],`<form class="stack" data-form="transition" data-stage-action="${esc(action)}">
+    ${action==="invite_interview"?input("scheduledAt","Дата и время интервью (МСК)",{type:"datetime-local",required:true}):""}
     ${input("reason","Комментарий к этапу",{type:"textarea",max:1200,optional:true})}${errors}<div>${submit(actions[action],"check")}</div></form>`);
   },
   "clarify-link"(target){

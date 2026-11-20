@@ -90,10 +90,10 @@ async function page(ctx, kind, conditions = [], params = [], opts = pageOptions(
   const where = ["kind = ?", ...conditions];
   const args = [kind, ...params];
   if (opts.after) {
-    where.push("(sort < ? OR (sort = ? AND id > ?))");
+    where.push(`(sort ${opts.ascending ? ">" : "<"} ? OR (sort = ? AND id > ?))`);
     args.push(opts.after.sort, opts.after.sort, opts.after.id);
   }
-  const found = await rows(ctx, `SELECT * FROM records WHERE ${where.join(" AND ")} ORDER BY sort DESC, id LIMIT ?`, ...args, opts.limit + 1);
+  const found = await rows(ctx, `SELECT * FROM records WHERE ${where.join(" AND ")} ORDER BY sort ${opts.ascending ? "ASC" : "DESC"}, id LIMIT ?`, ...args, opts.limit + 1);
   const list = found.slice(0, opts.limit);
   const last = list.at(-1);
   return { items: list, nextCursor: found.length > list.length ? `${last.sort}~${last.id}` : null };

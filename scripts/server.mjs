@@ -46,6 +46,10 @@ export async function localRuntime(options = {}) {
     YANDEX_API_KEY: options.yandex?.apiKey ?? process.env.YANDEX_API_KEY,
     YANDEX_MODEL: options.yandex?.model ?? process.env.YANDEX_MODEL,
     YANDEX_FETCH: options.yandex?.fetch,
+    GIGACHAT_AUTH_KEY: options.gigachat?.key ?? process.env.GIGACHAT_AUTH_KEY,
+    GIGACHAT_SCOPE: process.env.GIGACHAT_SCOPE,
+    GIGACHAT_MODEL: process.env.GIGACHAT_MODEL,
+    GIGACHAT_FETCH: options.gigachat?.fetch,
     DB: {
       prepare: (sql) => new Statement(sql),
       async batch(statements) {

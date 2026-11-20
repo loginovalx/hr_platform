@@ -79,7 +79,7 @@ async function hrApplications(ctx, method, p) {
   if (p[2] === "stage" && p.length === 3 && method === "GET") return result(viewStage(app));
   if (p[2] === "transitions" && p.length === 3 && method === "POST") return transition(ctx, app);
   if (p[2] === "history" && p.length === 3 && method === "GET") {
-    const found = await page(ctx, "stage_event", ["scope=?"], [app.id]);
+    const found = await page(ctx, "stage_event", ["scope=?"], [app.id], { ...pageOptions(ctx.url), ascending: true });
     return result(found);
   }
   missing();
@@ -163,7 +163,7 @@ async function hrRoutes(ctx, method, p) {
   if (p[0] === "interviews") {
     if (method === "GET" && p.length === 2) {
       const i = await get(ctx, "interview", p[1]);
-      return result({ interviewId: i.id, completedAt: i.completedAt, invitationId: i.invitationId });
+      return result({ interviewId: i.id, scheduledAt: i.scheduledAt ?? null, completedAt: i.completedAt, invitationId: i.invitationId });
     }
     if (method === "POST" && p.length === 3 && p[2] === "survey-invitations") return createInterviewInvitation(ctx, p[1]);
   }
@@ -180,7 +180,15 @@ async function hrRoutes(ctx, method, p) {
       const type = ctx.url.searchParams.get("type") || "interview_feedback";
       if (!Object.hasOwn(questionnaires, type)) missing();
       if (type === "exit_feedback") requireExit(ctx);
-      const found = await page(ctx, "invitation", ["scope=?"], [type]);
+      const status = ctx.url.searchParams.get("status") || "";
+      const conditions = ["scope=?"];
+      const params = [type];
+      if (status === "answered") conditions.push("json_extract(data,'$.responseId') IS NOT NULL");
+      if (status === "sent" || status === "prepared") {
+        conditions.push("json_extract(data,'$.status')=? AND json_extract(data,'$.expiresAt')>?");
+        params.push(status, isoNow());
+      }
+      const found = await page(ctx, "invitation", conditions, params);
       return result({ ...found, items: found.items.map(inviteSummary) });
     }
     if (p.length === 2 && method === "GET") return result(await inviteView(ctx, await get(ctx, "invitation", p[1])));

@@ -5,9 +5,15 @@ async function generateInterviewQuestions(env, facts) {
   const key = env.YANDEX_API_KEY?.trim();
   const folder = env.YANDEX_FOLDER_ID?.trim();
   const model = env.YANDEX_MODEL?.trim() || "yandexgpt-lite";
-  if (!key || !folder || !/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9._-]+(?:\/[a-z0-9._-]+)?$/i.test(model) || !facts.length) return new Map();
+  const giga = Boolean(env.GIGACHAT_AUTH_KEY?.trim());
+  if (!facts.length || (!giga && (!key || !folder || !/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9._-]+(?:\/[a-z0-9._-]+)?$/i.test(model)))) return new Map();
   try {
-    const response = await (env.YANDEX_FETCH || fetch)(yandexCompletionUrl, {
+    let text;
+    if (giga) {
+      facts = facts.slice(0, 2);
+      text = await cachedGigaCompletion(env, facts);
+    } else {
+      const response = await (env.YANDEX_FETCH || fetch)(yandexCompletionUrl, {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(7000),
@@ -21,10 +27,11 @@ async function generateInterviewQuestions(env, facts) {
           text: 'Подготовь по одному короткому практическому вопросу на русском для интервью по каждому известному типу профессионального требования. Если проверка неполная, попроси конкретный пример. Не оценивай человека, не выдумывай факты, не спрашивай о личной жизни. Верни только JSON: {"questions":[{"criterionKey":"c1","question":"Текст вопроса?"}]}. Используй только переданные criterionKey.'
         }, { role: "user", text: JSON.stringify(facts) }]
       })
-    });
-    if (!response.ok) return new Map();
-    const body = await response.json();
-    const text = body.result?.alternatives?.[0]?.message?.text;
+      });
+      if (!response.ok) return new Map();
+      const body = await response.json();
+      text = body.result?.alternatives?.[0]?.message?.text;
+    }
     if (typeof text !== "string" || text.length > 8000) return new Map();
     const { questions } = JSON.parse(text);
     if (!Array.isArray(questions)) return new Map();
@@ -66,5 +73,6 @@ async function interviewDraft(ctx, app) {
     label: criterion.label,
     question: generated.get(fact.criterionKey) || criterion.question || "Расскажите о рабочей задаче, где вы применяли этот навык, и как проверили результат?"
   }));
-  return commit(ctx, [], result({ source: generated.size ? "yandexgpt" : "local", questions }));
+  const source = generated.size ? (ctx.env.GIGACHAT_AUTH_KEY?.trim() ? "gigachat" : "yandexgpt") : "local";
+  return commit(ctx, [], result({ source, questions }));
 }

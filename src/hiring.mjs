@@ -24,7 +24,9 @@ async function transition(ctx, app) {
   if (action === "start_review") s.currentStage = "review";
   if (action === "invite_interview") {
     s.currentStage = "interview";
-    const interview = make({ applicationId: app.id, completedAt: null, invitationId: null }, app.id, at);
+    const scheduledAt = dateValue(ctx.body.scheduledAt, "scheduledAt");
+    if (scheduledAt && scheduledAt <= at) invalid("scheduledAt", "past_interview", "Выберите время интервью в будущем.");
+    const interview = make({ applicationId: app.id, scheduledAt, completedAt: null, invitationId: null }, app.id, at);
     s.interviewId = interview.id;
     statements.push(put(ctx, "interview", interview));
   }
@@ -225,10 +227,10 @@ async function publicClarification(ctx, id) {
 const moscowDay = value => new Date(Date.parse(value) + 3 * 3600000).toISOString().slice(0, 10);
 const periodStart = value => new Date(`${value}T00:00:00+03:00`).toISOString();
 const periodEnd = value => new Date(`${value}T23:59:59.999+03:00`).toISOString();
-function periodFilter(ctx) {
+function periodFilter(ctx, fromField = "from", toField = "to") {
   const vacancyId = ctx.url.searchParams.get("vacancyId") || "";
-  const from = ctx.url.searchParams.get("from") || "";
-  const to = ctx.url.searchParams.get("to") || "";
+  const from = ctx.url.searchParams.get(fromField) || "";
+  const to = ctx.url.searchParams.get(toField) || "";
   if (vacancyId && !safePath(vacancyId)) invalid("vacancyId", "invalid_id", "Выберите вакансию.");
   if ((from && (!day(from) || from.length !== 10)) || (to && (!day(to) || to.length !== 10)) || (from && to && from > to)) invalid("period", "invalid_period", "Укажите корректный период.");
   return { vacancyId, from, to };
@@ -259,11 +261,13 @@ async function analytics(ctx) {
     return acc;
   }, { received: 0, interview: funnel[2].reached, hired: 0, rejected: 0 });
   const allowed = ctx.actor.role === "admin" ? Object.keys(questionnaires) : ["interview_feedback"];
+  const surveyPeriod = ctx.url.searchParams.has("surveyFrom") || ctx.url.searchParams.has("surveyTo") || ctx.url.searchParams.has("separateSurveys")
+    ? periodFilter(ctx, "surveyFrom", "surveyTo") : { from, to };
   const dates = [];
   const dateArgs = [];
   if (vacancyId) { dates.push("json_extract(i.data,'$.vacancyId')=?"); dateArgs.push(vacancyId); }
-  if (from) { dates.push("json_extract(i.data,'$.sentAt')>=?"); dateArgs.push(periodStart(from)); }
-  if (to) { dates.push("json_extract(i.data,'$.sentAt')<=?"); dateArgs.push(periodEnd(to)); }
+  if (surveyPeriod.from) { dates.push("json_extract(i.data,'$.sentAt')>=?"); dateArgs.push(periodStart(surveyPeriod.from)); }
+  if (surveyPeriod.to) { dates.push("json_extract(i.data,'$.sentAt')<=?"); dateArgs.push(periodEnd(surveyPeriod.to)); }
   const surveys = [];
   for (const type of allowed) {
     const metrics = await prep(ctx, `SELECT COUNT(*) sent, COUNT(r.id) answered,

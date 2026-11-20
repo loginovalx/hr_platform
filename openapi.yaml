@@ -2266,7 +2266,7 @@ paths:
                 type: object
                 required: [source, questions]
                 properties:
-                  source: {type: string, enum: [yandexgpt, local]}
+                  source: {type: string, enum: [gigachat, yandexgpt, local]}
                   questions:
                     type: array
                     items:

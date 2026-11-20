@@ -81,6 +81,30 @@ test("interview draft is HR-only and sends only structured facts to YandexGPT", 
   assert.equal(calls,2);
 });
 
+test("GigaChat uses one bounded completion for repeated requests and keeps applicant content local", async t => {
+  const calls=[];
+  const {hr}=await fixture(t,"0",{gigachat:{key:"test-giga",fetch:async (url,init)=>{
+    calls.push(url);
+    if (url.endsWith("/oauth")) {
+      assert.equal(init.headers.Authorization,"Basic test-giga");
+      assert.equal(init.body.get("scope"),"GIGACHAT_API_B2B");
+      return Response.json({access_token:"test-token",expires_at:Date.now()+600000});
+    }
+    assert.equal(init.headers.Authorization,"Bearer test-token");
+    assert.equal(JSON.parse(init.body).max_tokens,160);
+    assert.doesNotMatch(init.body,/Частный текст|sample@example.test/);
+    return Response.json({choices:[{message:{content:'{"questions":[{"criterionKey":"c1","question":"Как вы проверяли запросы?"}]}'}}]});
+  }}});
+  const vacancy=await publish(hr);
+  const app=await hr("/hr/applications",post({vacancyId:vacancy.vacancyId,sourceChannel:"email",fullName:"Частный текст",contact:"sample@example.test",resumeText:"SQL. Частный текст."},201));
+  const path="/hr/applications/"+app.applicationId;
+  await hr(path+"/assessment");
+  const first=await hr(path+"/interview-draft",post({}));
+  assert.equal(first.source,"gigachat");
+  assert.deepEqual(await hr(path+"/interview-draft",post({})),first);
+  assert.equal(calls.length,2);
+});
+
 test("guest application, versioned test, linked candidate, all hiring stages and two independent surveys", async t=>{
   const {client,hr}=await fixture(t);
   const guest=client();
@@ -132,9 +156,14 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   assert.equal((await hr("/hr/candidates/"+candidate.candidateId)).additionalEducation,"Юриспруденция");
   await stage(hr,a.applicationId,"start_review",0);
   await stage(hr,a.applicationId,"invite_interview",0,409);
-  await stage(hr,a.applicationId,"invite_interview",1);
+  const scheduledAt=new Date(Date.now()+86400000).toISOString();
+  await hr(appUrl+"/transitions",post({action:"invite_interview",expectedVersion:1,scheduledAt}));
   await stage(hr,a.applicationId,"move_to_decision",2,409);
   const interviewId=(await hr(appUrl+"/stage")).interviewId;
+  assert.equal((await hr("/hr/interviews/"+interviewId)).scheduledAt,scheduledAt);
+  const firstEvent=await hr(appUrl+"/history?limit=1");
+  assert.equal(firstEvent.items[0].action,"receive");
+  assert.equal((await hr(appUrl+"/history?limit=1&cursor="+encodeURIComponent(firstEvent.nextCursor))).items[0].action,"start_review");
   await hr("/hr/interviews/"+interviewId+"/survey-invitations",post({},409));
   await stage(hr,a.applicationId,"complete_interview",2);
   const interview=await hr("/hr/interviews/"+interviewId+"/survey-invitations",post({},201));
@@ -173,6 +202,11 @@ test("guest application, versioned test, linked candidate, all hiring stages and
   assert.equal((await hr(appUrl+"/stage")).outcome,"hired");
   assert.deepEqual(stats.departures,[{department:"Департамент",month:today().slice(0,7),category:"employer_initiated",total:1}]);
   assert.deepEqual((await hr("/hr/analytics?to=2020-01-01")).departures,[]);
+  const separate=await hr("/hr/analytics?to=2020-01-01&separateSurveys=1");
+  assert.equal(separate.totals.received,0);
+  assert.equal(separate.surveys.find(x=>x.type==="exit_feedback").answered,1);
+  assert.equal((await hr("/hr/survey-invitations?type=exit_feedback&status=answered")).items.length,1);
+  assert.equal((await hr("/hr/survey-invitations?type=exit_feedback&status=sent")).items.length,0);
   const limited=await regular("/hr/analytics");
   assert.equal(limited.surveys.length,1);
   assert.equal(limited.departures,undefined);
